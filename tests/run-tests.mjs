@@ -17,6 +17,8 @@ import {
   segmentIdeas,
   compressBullet,
   isFragmentBullet,
+  isGarbledText,
+  buildSummaryBullets,
   splitSentences,
   stripTimestamps,
   extractDiagrams,
@@ -36,6 +38,7 @@ import {
   transcribeBlob,
 } from "../whisper.js";
 import { pptxSlideXml } from "./pptx-zip.mjs";
+import { stubModelOutline } from "./stub-model.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -170,7 +173,8 @@ check("Turing titles name the ideas", ["The hierarchy: FSM", "The tape and its a
 const turingText = turingSlides.flatMap((s) => [s.title, ...(s.bullets || []).map((b) => b.text)]).join(" ");
 check("Turing slide text has no timestamp pattern", !/\b\d{1,2}:\d{2}\b/.test(turingText));
 check("Turing slide text has no filler words", !/\b(uh|um|uhm|hmm|okay\?|you know|like,? you know)\b/i.test(turingText));
-check("Turing bullets are short, not verbatim chunks", turingSlides.flatMap((s) => s.bullets || []).every((b) => b.text.length <= 120), `longest: ${Math.max(...turingSlides.flatMap((s) => s.bullets || []).map((b) => b.text.length))}`);
+check("Turing content bullets are short, not verbatim chunks", turingContent.flatMap((s) => s.bullets || []).every((b) => b.text.length <= 120), `longest: ${Math.max(...turingContent.flatMap((s) => s.bullets || []).map((b) => b.text.length))}`);
+check("Turing summary bullets fit the outline limit", turingSlides.find((s) => s.type === "summary").bullets.every((b) => b.text.length <= 200));
 check("Turing bullets are not sentence fragments", turingSlides.flatMap((s) => s.bullets || []).every((b) => !isFragmentBullet(b.text)));
 check("Turing content slides have 2 to 4 bullets", turingContent.every((s) => s.bullets.length >= 2 && s.bullets.length <= 4), turingContent.map((s) => s.bullets.length).join(","));
 const turingFull = turingSlides.flatMap((s) => [s.title, ...(s.bullets || []).map((b) => b.text), s.notes || ""]).join(" ").toLowerCase();
@@ -180,6 +184,61 @@ check("Turing deck mentions the halting outcomes", ["accept", "reject", "loop"].
 const turingChecked = verifyDeck(turing, turingSlides);
 check("Turing deck passes the fact checker", turingChecked.ok === true, JSON.stringify(turingChecked.failed.slice(0, 2)));
 check("Turing slides carry speaker notes", turingContent.every((s) => s.notes && s.notes.length > 50));
+
+// ---- 1e. Deterministic path: readability guard and restated summary --------
+// The audit of the exported tm-intro deck found garbled lines the
+// deterministic pipeline had copied onto slides. The guard drops them, and
+// the summary restates one takeaway per idea instead of repeating the
+// lecture's most central sentences verbatim (which copied the worst lines).
+check("isGarbledText catches a repeated phrase", isGarbledText("Same symbol Next is rules of two operation two is so this is this is this control is quite equivalent") === true);
+check("isGarbledText catches a word repeated with one word between", isGarbledText("Having a blank string special symbol so after your after the input string ends") === true);
+check("isGarbledText catches a stuttered verb", isGarbledText("The operations here is read the read or scan the input symbol") === true);
+check("isGarbledText leaves clean lines alone", isGarbledText("Move the tape one step, left or one step right") === false && isGarbledText("The blank symbol is used to fill the infinite tape") === false && isGarbledText("Turing machine is more powerful") === false);
+const turingAllBullets = turingSlides.flatMap((s) => s.bullets || []);
+check("Turing deterministic deck has no garbled bullet", turingAllBullets.every((b) => !isGarbledText(b.text)));
+check("Turing deterministic deck dropped the ASR-noise bullet", !turingText.includes("Same symbol Next is rules"));
+check("Turing deterministic deck dropped the repeated-after bullet", !turingText.includes("after your after"));
+const turingSummary = turingSlides.find((s) => s.type === "summary");
+const turingContentTexts = new Set(turingContent.flatMap((s) => s.bullets.map((b) => b.text)));
+check("Turing summary has one takeaway per idea slide", turingSummary.bullets.length === turingContent.length, `${turingSummary.bullets.length} summary bullets for ${turingContent.length} content slides`);
+check("Turing summary restates instead of copying bullets", turingSummary.bullets.every((b) => !turingContentTexts.has(b.text)));
+check("Turing summary is labelled with each slide title", turingContent.every((s) => turingSummary.bullets.some((b) => b.text.startsWith(`${s.title}:`))));
+check("Turing summary carries no garbled line", turingSummary.bullets.every((b) => !isGarbledText(b.text)));
+check("buildSummaryBullets restates from titles and clean bullets", buildSummaryBullets(turingContent).length === turingContent.length && buildSummaryBullets(turingContent).every((b) => b.text.includes(":")));
+
+// ---- 1f. Model path: stubbed model rewrites the Turing lecture -------------
+// No API key exists in this repo and none is used: the stub stands in for a
+// real LLM following the new structure / slide_designer prompts, and the
+// test runs the real set_outline flow and the real fact checker on its
+// output. (The deck.js state functions are imported in section 8 below;
+// ES imports hoist, so they are available here.)
+const turingModelOutline = stubModelOutline(turing, "Turing Machines - Introduction");
+check("stub model outline has seven slides", turingModelOutline.slides.length === 7, turingModelOutline.slides.map((s) => s.title).join(" | "));
+const turingModelLoaded = setTranscript(turing, "paste");
+check("mock-model test loads the Turing transcript", turingModelLoaded.ok === true);
+const turingModelSet = setOutline(turingModelOutline);
+check("set_outline stores the model-written Turing deck", turingModelSet.ok === true && turingModelSet.slides === 7);
+const modelSlides = deckApp.slides;
+const modelText = modelSlides.flatMap((s) => [s.title, ...(s.bullets || []).map((b) => b.text)]).join(" ");
+check("model deck has no Charge symbol", !/charge symbol/i.test(modelText));
+check("model deck has no ASR-noise bullet", !modelText.includes("Same symbol Next is rules") && !/this is this is/i.test(modelText));
+check("model deck fixes the comparative", modelText.includes("more powerful than") && !modelText.includes("quite powerful than"));
+check("model deck defines the 7-tuple correctly", modelText.includes("is defined by a 7-tuple") && !/seven tuples/i.test(modelText));
+check("model deck names all seven tuple parts", ["Q is the set of states", "Sigma is the input alphabet", "Gamma is the tape alphabet", "transition function", "final states", "blank symbol"].every((t) => modelText.includes(t)) && modelText.includes("delta(q0, A) = (q1, Y, R)"));
+check("model deck has no stack in Sigma", !modelText.includes("stack symbols will be considered as sigma") && modelText.includes("does not belong to Sigma"));
+check("model deck has no end of the tape", !modelText.includes("end of the tape") && modelText.includes("no end to reach"));
+const modelContent = modelSlides.filter((s) => s.type === "content");
+const modelSummary = modelSlides.find((s) => s.type === "summary");
+const modelContentTexts = new Set(modelContent.flatMap((s) => s.bullets.map((b) => b.text)));
+check("model summary has one restated takeaway per idea", modelSummary.bullets.length === modelContent.length, `${modelSummary.bullets.length} summary bullets for ${modelContent.length} content slides`);
+check("model summary copies no bullet", modelSummary.bullets.every((b) => !modelContentTexts.has(b.text)));
+const MODEL_VERB = /\b(is|are|can|has|have|read|reads|write|writes|move|moves|define|defined|map|maps|hold|holds|fill|fills|halt|accept|reject|loop|replace|replaces|store|stores|takes|use|uses|passes)\b/i;
+const modelBullets = modelSlides.flatMap((s) => s.bullets || []);
+check("model bullets are complete sentences", modelBullets.every((b) => /^[A-Z]/.test(b.text) && /[.!?]$/.test(b.text) && MODEL_VERB.test(b.text) && !isFragmentBullet(b.text) && !isGarbledText(b.text)), modelBullets.filter((b) => !(/^[A-Z]/.test(b.text) && /[.!?]$/.test(b.text) && MODEL_VERB.test(b.text))).map((b) => b.text).join(" | "));
+const modelVerdict = verifyDeckAction();
+check("model deck passes the fact checker", modelVerdict.ok === true, JSON.stringify(modelVerdict.failed.slice(0, 2)));
+check("model deck fact check examined its bullets", modelVerdict.checked >= 20, `checked ${modelVerdict.checked}`);
+clearTranscript();
 
 // ---- 2. .pptx export ---------------------------------------------------------
 // The vendored bundle is a browser classic script: it declares a top-level
@@ -552,7 +611,16 @@ check("quiz hocon exists and names the quiz network", readFileSync(path.join(ROO
 check("manifest peer policy stays closed", manifest.peer_policy.mode === "closed");
 check("site.js tells agents whether the model is real", readFileSync(path.join(ROOT, "site.js"), "utf8").includes("Real model:"));
 check("structure instructions require rewriting, not verbatim", network.tools.find((t) => t.name === "structure").instructions.includes("never their verbatim words"));
+check("structure instructions demand complete sentences", network.tools.find((t) => t.name === "structure").instructions.includes("one complete sentence with a subject and a verb"));
+check("structure instructions repair ASR garbles from context", network.tools.find((t) => t.name === "structure").instructions.includes("charge symbol") && network.tools.find((t) => t.name === "structure").instructions.includes("pure ASR noise"));
+check("structure instructions state the correct 7-tuple", network.tools.find((t) => t.name === "structure").instructions.includes("7-tuple is (Q, Sigma, Gamma, delta, q0, blank, F)") && network.tools.find((t) => t.name === "structure").instructions.includes("delta(q0, A) = (q1, Y, R)"));
+check("structure instructions keep the stack out of Sigma", network.tools.find((t) => t.name === "structure").instructions.includes("has no stack") && network.tools.find((t) => t.name === "structure").instructions.includes("does not belong to Sigma"));
+check("structure instructions restate the summary, never copy", network.tools.find((t) => t.name === "structure").instructions.includes("never copies a bullet or a transcript sentence"));
 check("slide_designer instructions return outline JSON", network.tools.find((t) => t.name === "slide_designer").instructions.includes("website_set_outline"));
+check("slide_designer instructions polish bullets and check the facts", network.tools.find((t) => t.name === "slide_designer").instructions.includes("Polish every bullet into one complete sentence") && network.tools.find((t) => t.name === "slide_designer").instructions.includes("pure ASR noise"));
+check("grounding rules never touch an API key", network.commondefs.replacement_strings.grounding_rules.includes("Never ask for, log, or store an API key"));
+check("set_outline description demands complete sentences", actionsSrc.includes("one complete sentence in correct grammar"));
+check("hocon and network agree on the rewrite rules", readFileSync(path.join(ROOT, "deckcast.hocon"), "utf8").includes("7-tuple is (Q, Sigma, Gamma, delta, q0, blank, F)") && readFileSync(path.join(ROOT, "deckcast.hocon"), "utf8").includes("never copies a bullet or a transcript sentence"));
 
 // ---- 13. Export themes -----------------------------------------------------------
 // Three .pptx themes, independent of the site palette: cream (the site
