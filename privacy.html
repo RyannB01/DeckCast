@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="description" content="DeckCast privacy: what the site does with visitor data. Short answer: it collects nothing. Lecture text and audio stay in your browser, and your AI provider key is stored in your browser only.">
+    <meta property="og:title" content="Privacy - DeckCast">
+    <meta property="og:description" content="DeckCast collects nothing. Lecture text and audio stay in your browser, and your AI provider key is stored in your browser only.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://ryannb01.github.io/DeckCast/privacy.html">
+    <meta property="og:image" content="https://ryannb01.github.io/DeckCast/og-image.png">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' https:; font-src 'self'; object-src 'none'; base-uri 'self'; worker-src 'self' blob:; upgrade-insecure-requests">
+    <title>Privacy - DeckCast</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body id="top">
+    <header class="site-header">
+      <a class="brand" href="index.html">DeckCast</a>
+      <nav class="site-nav" aria-label="Main navigation">
+        <a href="index.html#lecture">Lecture</a>
+        <a href="index.html#deck">Deck</a>
+        <a href="index.html#assistant">Assistant</a>
+      </nav>
+    </header>
+    <main>
+      <section class="panel" aria-labelledby="privacy-heading">
+        <h1 id="privacy-heading">Privacy</h1>
+        <p>Short version: DeckCast collects nothing about you. There is no account, no analytics, and no tracking.</p>
+
+        <h2>Your lecture stays in your browser</h2>
+        <p>Transcripts you paste, audio you record or upload, and the slides DeckCast builds from them are processed in your browser only. They are never uploaded to a server, because DeckCast has no server. Closing the page discards them.</p>
+
+        <h2>Your AI provider key stays in your browser</h2>
+        <p>The assistant can use a real AI model if you add your own provider key in AI model settings. The key is stored in your browser's local storage only. It is sent only to the provider you choose, and only when you send a chat message. It is never sent to DeckCast, never sent to any peer site, and never put in a URL or a file. Set a spending limit on the key with your provider before you use it.</p>
+        <p>To remove a saved key, delete it in AI model settings, or clear this site's data in your browser. Either way it is gone from this browser.</p>
+
+        <h2>Cookies</h2>
+        <p>The deployed site sets no cookies, so there is no cookie banner. One exception exists only on local development runs: when the site runs on localhost, the runtime mirrors the saved provider profile to a same-site host cookie so settings follow across local ports. That cookie is never set on the deployed site.</p>
+
+        <h2>Third parties</h2>
+        <p>DeckCast loads nothing from a third party: no fonts, scripts, styles, images, or analytics from anywhere else. The font is served from this site, and every library is vendored locally. The only request that ever leaves your browser is the AI provider call described above, which happens only after you enter a key and send a message.</p>
+        <p>Links on the site go to other sites (Devpost, GitHub, and the AI providers' key pages). Those sites have their own privacy policies; DeckCast does not control them.</p>
+
+        <h2>Questions</h2>
+        <p>DeckCast is built by Ryann Binoy. You can reach the project at <a href="https://github.com/RyannB01/DeckCast">github.com/RyannB01/DeckCast</a>.</p>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <p><a href="index.html">DeckCast home</a> &middot; <a href="privacy.html">Privacy</a> &middot; <a href="terms.html">Terms</a> &middot; <a href="#top">Back to top</a></p>
+      <p>&copy; 2026 Ryann Binoy</p>
+    </footer>
+  </body>
+</html>
