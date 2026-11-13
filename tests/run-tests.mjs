@@ -502,25 +502,34 @@ check("stylesheet has skeleton and empty-state styles", css.includes(".skeleton"
 check("stylesheet animates entrances ease-out", css.includes("@keyframes slide-in") && css.includes("ease-out"));
 check("stylesheet respects reduced motion", css.includes("prefers-reduced-motion"));
 
-// ---- 12. Whisper vendoring and the quiz peer -----------------------------------
-// Whisper runs on the device from vendored files: the model is never fetched
-// from Hugging Face, and no audio or transcript leaves the browser.
+// ---- 12. Whisper from Hugging Face and the quiz peer ---------------------------
+// Whisper runs on the device, but the model itself is not vendored: the
+// 30.7 MB decoder is over every GitHub upload limit, so the library
+// downloads it from the Hugging Face hub on first use (about 44 MB total,
+// cached by the browser afterwards). The library and the ONNX runtime wasm
+// stay vendored. No audio or transcript ever leaves the browser: the
+// Hugging Face request is a download only.
 check("Whisper model is tiny, quantized, English-only", WHISPER_MODEL === "Xenova/whisper-tiny.en");
 check("Whisper expects 16 kHz mono audio", WHISPER_SAMPLE_RATE === 16000);
 check("transcription estimate is about half real time", estimateTranscribeMs(30) === 15000 && estimateTranscribeMs(0) === 1000);
+const whisperSource = readFileSync(path.join(ROOT, "whisper.js"), "utf8");
+check("whisper.js loads the model from Hugging Face", whisperSource.includes("allowRemoteModels = true"));
+check("whisper.js does not read a local model directory", whisperSource.includes("allowLocalModels = false") && !whisperSource.includes("localModelPath") && !whisperSource.includes("vendor/models"));
 const whisperVendor = [
   "vendor/transformers.min.js",
   "vendor/onnx/ort-wasm-simd.wasm",
   "vendor/onnx/ort-wasm.wasm",
-  "vendor/models/Xenova/whisper-tiny.en/onnx/encoder_model_quantized.onnx",
-  "vendor/models/Xenova/whisper-tiny.en/onnx/decoder_model_merged_quantized.onnx",
-  "vendor/models/Xenova/whisper-tiny.en/tokenizer.json",
 ];
 for (const f of whisperVendor) {
-  check(`Whisper vendor file exists: ${f}`, existsSync(path.join(ROOT, f)) && statSync(path.join(ROOT, f)).size > 1000);
+  check(`Whisper runtime file exists: ${f}`, existsSync(path.join(ROOT, f)) && statSync(path.join(ROOT, f)).size > 1000);
 }
-check("largest vendored model file is under GitHub's 100 MB limit", statSync(path.join(ROOT, "vendor/models/Xenova/whisper-tiny.en/onnx/decoder_model_merged_quantized.onnx")).size < 100 * 1024 * 1024);
-check("whisper.js disables remote models", readFileSync(path.join(ROOT, "whisper.js"), "utf8").includes("allowRemoteModels = false"));
+// The model download goes to huggingface.co (large files redirect to its
+// *.cdn.hf.co CDN). The CSP permits it through connect-src 'self' https:,
+// which stays broad on purpose: the BYOK panel lets a visitor point at any
+// OpenAI-compatible provider router, so the policy cannot be narrowed to a
+// fixed host list without breaking the LLM calls.
+check("page CSP permits the Hugging Face model download", indexHtml.includes("connect-src 'self' https:"));
+check("server headers CSP permits the Hugging Face model download", readFileSync(path.join(ROOT, "_headers"), "utf8").includes("connect-src 'self' https:"));
 check("page CSP allows wasm eval for the ONNX runtime", indexHtml.includes("'wasm-unsafe-eval'"));
 check("server headers CSP allows wasm eval for the ONNX runtime", readFileSync(path.join(ROOT, "_headers"), "utf8").includes("'wasm-unsafe-eval'"));
 // transcribeBlob with an override: the Node-safe path, no model download.
