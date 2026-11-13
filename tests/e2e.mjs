@@ -115,16 +115,17 @@ try {
     if (msg.type() === "error") pageErrors.push(`console.error: ${msg.text().slice(0, 200)}`);
   });
 
-  // ---- Whisper stub: the real vendored library is 900 KB plus 44 MB of model
-  // files, so the upload test intercepts it with a small stand-in that speaks
-  // the same API (env plus pipeline returning a transcriber). The stand-in
-  // throws on its first transcription call and returns a fixture transcript
-  // after that; the call count lives in localStorage, so it stays good across
-  // a page reload. This covers the upload error path, the retry button, and
-  // the success path without downloading the model in CI.
+  // ---- Whisper stub: the real library is 900 KB and the model is a 44 MB
+  // download from Hugging Face, so the upload test intercepts it with a small
+  // stand-in that speaks the same API (env plus pipeline returning a
+  // transcriber). The stand-in throws on its first transcription call and
+  // returns a fixture transcript after that; the call count lives in
+  // localStorage, so it stays good across a page reload. This covers the
+  // upload error path, the retry button, and the success path without
+  // downloading the model in CI.
   const WHISPER_FIXTURE = "Photosynthesis is how plants make food from sunlight. The light reactions split water and release oxygen. The Calvin cycle fixes carbon dioxide into sugar.";
   const WHISPER_STUB = `
-export const env = { allowRemoteModels: true, allowLocalModels: true, localModelPath: "", backends: { onnx: { wasm: { wasmPaths: "", numThreads: 1 } } } };
+export const env = { allowRemoteModels: true, allowLocalModels: false, localModelPath: "", backends: { onnx: { wasm: { wasmPaths: "", numThreads: 1 } } } };
 export async function pipeline(task, model, options) {
   const cb = options && options.progress_callback;
   if (cb) {
@@ -276,7 +277,7 @@ export async function pipeline(task, model, options) {
   check("sample lecture loads into the view", await page.locator("#transcript-words").innerText().then((t) => t.includes("words")));
 
   // ---- 8. Upload audio: stubbed Whisper, throw then good, across reload --------
-  // The vendored Whisper library is intercepted by the stub installed above:
+  // The Whisper library is intercepted by the stub installed above:
   // the first transcription throws, the retry succeeds, and after a reload
   // the stub is already good. The tone file has no speech, but the stub
   // returns its fixture transcript either way.
