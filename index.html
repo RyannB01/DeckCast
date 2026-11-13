@@ -87,7 +87,8 @@
 
       <section id="deck" class="panel" aria-labelledby="deck-heading">
         <h2 id="deck-heading">3. Build the deck</h2>
-        <p>Building is deterministic: every bullet comes from a sentence in the transcript, and each one keeps a link to its source sentence so the fact checker can verify it.</p>
+        <p>Build deck turns the transcript into slides. With a real model key set, the agents rewrite the lecture into clean slides and check every claim against the transcript. Without one, every bullet comes from a sentence in the transcript, and each one keeps a link to its source sentence so the fact checker can verify it.</p>
+        <p id="build-path" class="status" role="status"></p>
         <div class="field-row">
           <label for="export-theme">Export theme</label>
           <select id="export-theme" name="export-theme">

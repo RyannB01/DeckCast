@@ -42,7 +42,7 @@ export function registerActions(actions) {
   });
   actions.register({
     name: "set_outline",
-    description: "Store a model-written outline on the page: title slide, content slides with one idea each, and a summary slide. Use it after rewriting the lecture into short bullets in your own words: a real title naming each idea, 2 to 4 short bullets per content slide, transcript detail in the speaker notes. Every bullet is one complete sentence in correct grammar: fix spoken slips and ASR garbles from the lecture context (a misheard word the lecture makes clear is corrected, a line of pure ASR noise is dropped, never kept), correct domain facts the lecture itself supports, and never copy transcript sentences verbatim, never put a timestamp or a filler word on a slide. The summary restates the takeaways in your own words, one per idea, never copied from another bullet. Every bullet is checked against the transcript afterwards, so write only what the lecture says.",
+    description: "Store a model-written outline on the page: title slide, content slides with one idea each, and a summary slide. Each content slide has a real title naming the idea, 2 to 4 short bullets, and transcript detail in the speaker notes. Every bullet is one complete sentence in correct grammar. The summary restates the takeaways in your own words, one per idea, never copied from another bullet. Every bullet is checked against the transcript afterwards, so write only what the lecture says.",
     effect: "write",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["title", "slides"],

@@ -4,6 +4,7 @@
 
 import { extractOutline, buildSlides, verifyDeck, createPptx, slugify, countWords, stripTimestamps, cleanTranscript, diagramSvg, resolveExportTheme } from "./deckcast-core.js";
 import { transcribeBlob } from "./whisper.js";
+import { agentLink, hasRealModel, setModelError } from "./agent-link.js";
 
 export const MAX_AUDIO_MB = 50;
 export const EXPORT_THEME_KEY = "deckcast-export-theme";
@@ -24,6 +25,7 @@ export const app = {
   outline: null,
   slides: [],
   deckBuilt: false,
+  outlineSource: null, // "model" | "deterministic" | null: which path wrote the current outline
   recording: false,
   // The export theme: the visitor's last choice, remembered in localStorage.
   // Cream is the site palette and the default.
@@ -119,7 +121,7 @@ export function getLectureState() {
     hasTranscript: app.transcript.trim().length > 0,
     transcriptWords: countWords(app.transcript),
     transcriptSource: app.transcriptSource,
-    transcriptExcerpt: app.transcript ? stripTimestamps(app.transcript).slice(0, 2000) : "",
+    transcriptExcerpt: app.transcript ? stripTimestamps(app.transcript).slice(0, 1200) : "",
     hasOutline: !!app.outline,
     outlineSlides: app.outline ? app.outline.slides.length : 0,
     hasDeck: app.deckBuilt,
@@ -137,6 +139,7 @@ export function setTranscript(text, source) {
   app.transcript = clean;
   app.transcriptSource = source || "paste";
   app.outline = null;
+  app.outlineSource = null;
   app.slides = [];
   app.deckBuilt = false;
   renderTranscript();
@@ -183,6 +186,7 @@ export function setOutline(outline) {
     slides.push({ type, title: slideTitle, bullets: cleanBullets, notes, diagram: slide.diagram || null });
   }
   app.outline = { title: cleanTranscript(title), slides };
+  app.outlineSource = "model";
   app.slides = buildSlides(app.outline);
   app.deckBuilt = false;
   renderDeck();
@@ -194,6 +198,7 @@ export function buildOutline() {
     return { ok: false, reason: "There is no transcript yet. Paste one, record with the microphone, or load the sample lecture first." };
   }
   app.outline = extractOutline(app.transcript, app.title || "Untitled lecture");
+  app.outlineSource = "deterministic";
   app.slides = buildSlides(app.outline);
   app.deckBuilt = false;
   return { ok: true, slides: app.outline.slides.length, title: app.outline.title };
@@ -214,6 +219,96 @@ export function renderSlides() {
     renderDeck();
   });
   return { ok: true, slideCount: app.slides.length, titles: app.slides.map((s) => s.title) };
+}
+
+// The Build deck area states which path will run, before the visitor
+// presses the button. Pure function of the agent link state, so the unit
+// tests can assert every state without a DOM.
+export function buildPathText() {
+  const engine = agentLink.engine;
+  if (!engine) {
+    return "The assistant is still connecting. For now, Build deck builds the deck deterministically from the transcript.";
+  }
+  if (agentLink.modelError) {
+    return `The last model call failed (${agentLink.modelError}). Build deck will try the model again, and fall back to the deterministic deck if it fails.`;
+  }
+  if (!hasRealModel()) {
+    return "No AI provider key is set, so Build deck builds the deck deterministically from the transcript. Add a key in AI model settings to have the model rewrite the lecture into slides.";
+  }
+  if (agentLink.modelVerified) {
+    const model = agentLink.verifiedModel ? ` (${agentLink.verifiedModel})` : "";
+    return `Model verified${model}. Build deck will ask the model to rewrite the lecture into slides.`;
+  }
+  return "A real model is configured, so Build deck will ask the model to rewrite the lecture into slides. The key is not verified yet; the first model answer verifies it.";
+}
+
+export function updateBuildPathStatus() {
+  const node = el("build-path");
+  if (!node) return;
+  node.textContent = buildPathText();
+}
+
+// Shorten a provider error for a status line: one line, at most 240
+// characters, so a long provider body does not flood the page.
+function modelErrorText(err) {
+  const text = String((err && err.message) || err || "unknown error").replace(/\s+/g, " ").trim();
+  return text.length > 240 ? `${text.slice(0, 237)}...` : text;
+}
+
+// Build the deck through the deterministic pipeline and report it. `note`
+// is a plain-language prefix shown when the model path was tried first and
+// did not produce a rewritten deck: the visitor must never be left thinking
+// the model wrote a deterministic deck.
+function buildDeterministicDeck(note) {
+  const built = buildOutline();
+  if (!built.ok) return { ok: false, path: "deterministic", reason: built.reason };
+  const rendered = renderSlides();
+  if (!rendered.ok) return { ok: false, path: "deterministic", reason: rendered.reason };
+  const message = note
+    ? `${note} Deck built: ${rendered.slideCount} slides. Check them below, then export.`
+    : `Deck built: ${rendered.slideCount} slides. Check them below, then export.`;
+  return { ok: true, path: "deterministic", slideCount: rendered.slideCount, message };
+}
+
+// Build the deck. With a real provider key configured, the request goes
+// through the agent network exactly the way the chat sends it ("Turn this
+// lecture into slides"): the producer has structure and slide_designer
+// rewrite the lecture through the model, and the deck arrives with
+// set_outline. Without a key, or while the assistant is still connecting,
+// the deterministic pipeline builds it. If the model call fails, or the
+// turn finishes without a rewritten deck, the deterministic deck is shown
+// instead, with a plain note saying what happened and why.
+export async function buildDeck() {
+  if (!app.transcript.trim()) {
+    return { ok: false, path: "none", reason: "There is no transcript yet. Paste one, record with the microphone, or load the sample lecture first." };
+  }
+  if (!hasRealModel()) {
+    return buildDeterministicDeck(null);
+  }
+  // The chat input bar marks an active chat turn; two turns on one engine
+  // would share its history, so while the assistant is busy in chat the
+  // button builds deterministically and says so.
+  if (typeof document !== "undefined") {
+    const inputBar = document.querySelector(".ns-inputbar");
+    if (inputBar && inputBar.dataset && inputBar.dataset.turnActive === "true") {
+      return buildDeterministicDeck("The assistant is busy in chat, so the deterministic deck is shown instead.");
+    }
+  }
+  try {
+    await agentLink.engine.runTurn("Turn this lecture into slides.");
+  } catch (err) {
+    const reason = modelErrorText(err);
+    setModelError(reason);
+    return buildDeterministicDeck(`The model call failed (${reason}), so the deterministic deck is shown instead.`);
+  }
+  if (app.outlineSource === "model" && app.slides.length) {
+    const rendered = renderSlides();
+    if (!rendered.ok) {
+      return buildDeterministicDeck("The model wrote an outline, but rendering it failed, so the deterministic deck is shown instead.");
+    }
+    return { ok: true, path: "model", slideCount: rendered.slideCount, message: `Deck rewritten with the model: ${rendered.slideCount} slides. Check them below, then export.` };
+  }
+  return buildDeterministicDeck("The model turn finished but did not rewrite the deck, so the deterministic deck is shown instead.");
 }
 
 export function verifyDeckAction() {
@@ -262,6 +357,7 @@ export function clearTranscript() {
   app.transcript = "";
   app.transcriptSource = null;
   app.outline = null;
+  app.outlineSource = null;
   app.slides = [];
   app.deckBuilt = false;
   const input = el("transcript-input");
@@ -699,18 +795,18 @@ function wire() {
     clearTranscript();
     setStatus(el("transcript-status"), "Transcript cleared.", "info");
   });
-  el("build-deck").addEventListener("click", () => {
+  el("build-deck").addEventListener("click", async () => {
     app.title = titleInput ? titleInput.value.trim() : "";
-    const built = buildOutline();
-    if (!built.ok) {
-      setStatus(el("deck-status"), built.reason, "error");
-      return;
-    }
-    const rendered = renderSlides();
-    if (rendered.ok) {
-      setStatus(el("deck-status"), `Deck built: ${rendered.slideCount} slides. Check them below, then export.`, "success");
-    } else {
-      setStatus(el("deck-status"), rendered.reason, "error");
+    const btn = el("build-deck");
+    btn.disabled = true;
+    setStatus(el("deck-status"), hasRealModel() ? "Asking the model to rewrite the lecture into slides..." : "Building the deck...", "info");
+    try {
+      const result = await buildDeck();
+      setStatus(el("deck-status"), result.ok ? result.message : result.reason, result.ok ? "success" : "error");
+    } catch (err) {
+      setStatus(el("deck-status"), "Building the deck failed. Try again.", "error");
+    } finally {
+      btn.disabled = false;
     }
   });
   el("export-deck").addEventListener("click", async () => {
@@ -727,6 +823,7 @@ function wire() {
   });
   renderTranscript();
   renderDeck();
+  updateBuildPathStatus();
 }
 
 // Only wire the page when there is one. In Node (unit tests) the module
