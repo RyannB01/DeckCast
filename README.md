@@ -29,7 +29,16 @@ The fastest demo: press **Load the sample lecture**, then **Build deck**, then *
 
 ## Bring your own key
 
-By default the assistant runs in demo mode: it can build decks from the page, but its writing and fact checking use a demo model. For real model calls, add your own AI provider key in **AI model settings** in the assistant panel. The key is stored in your browser's localStorage only. It is sent only to the provider you choose, never to DeckCast, never to any peer site, and never into a URL or a file. Set a spending limit on the key with your provider before you use it.
+By default the assistant runs in demo mode: it can build decks from the page, but its writing and fact checking use a demo model. For real model calls, add your own AI provider key in **AI model settings** in the assistant panel. Pick a provider, get a key from that provider's site, and paste it in. The key is stored in your browser's localStorage only. It is sent only to the provider you choose, never to DeckCast, never to any peer site, and never into a URL or a file. Set a spending limit on the key with your provider before you use it.
+
+- **Google AI Studio (free tier).** Go to https://aistudio.google.com/apikey and sign in with a Google account. Press **Get API key**, then **Create API key**, and copy the key (it starts with `AIza`). Back in DeckCast, pick **Google AI Studio** in AI model settings and paste it in. Model used: `gemini-3.8-flash`.
+- **Groq (free tier).** Go to https://console.groq.com/keys and sign in. Press **Create API Key**, give it a name, and copy the key (it starts with `gsk_`). **Groq shows the key only once** — if you close the page without copying it, create a new one. Back in DeckCast, pick **Groq** in AI model settings and paste it in. Model used: `openai/gpt-oss-120b`.
+- **OpenAI (billing may be required).** Go to https://platform.openai.com/api-keys and sign in. Press **Create new secret key**, and copy the key (it starts with `sk-proj-`). Back in DeckCast, pick **OpenAI** in AI model settings and paste it in. Model used: `gpt-5.5`.
+- **Anthropic (billing may be required).** Go to https://console.anthropic.com/settings/keys and sign in. Press **Create Key**, and copy the key (it starts with `sk-ant-`). Back in DeckCast, pick **Anthropic** in AI model settings and paste it in. Model used: `claude-sonnet-4-6`.
+
+You can also point DeckCast at any other OpenAI-compatible provider by entering its router URL and key in the same settings panel.
+
+How to tell it worked: after you paste a key, the assistant panel shows an **LLM configured** badge, and the next deck you build is written and fact checked by the real model. You can confirm on the provider's side too — its usage page should show calls going out (for example, a fresh Groq key shows 0 API calls until the first real run).
 
 ## Privacy
 
