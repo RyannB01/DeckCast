@@ -270,6 +270,41 @@ export async function pipeline(task, model, options) {
   await page.selectOption("#export-theme", "cream");
   check("theme returns to cream", (await page.evaluate(() => window.localStorage.getItem("deckcast-export-theme"))) === "cream");
 
+  // ---- 6c. Turing lecture: deterministic quality guard and restated summary ----
+  // The noisy ASR fixture from tests/turing-lecture.txt, built through the
+  // page's own Build deck button (the deterministic pipeline). The garbled
+  // lines the old export carried must not reach any slide, and the summary
+  // must restate the takeaways instead of repeating bullets.
+  const turing = readFileSync(path.join(ROOT, "tests", "turing-lecture.txt"), "utf8");
+  await page.fill("#lecture-title", "Turing Machines - Introduction");
+  await page.fill("#transcript-input", turing);
+  await page.click("#use-transcript");
+  await page.waitForFunction(() => document.getElementById("transcript-view").textContent.includes("Turing machine"), null, { timeout: 5000 });
+  await page.click("#build-deck");
+  await page.waitForSelector(".slide-card:not(.slide-skeleton)", { timeout: 10000 });
+  const turingDeck = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll(".slide-card:not(.slide-skeleton)")];
+    const textOf = (sel) => [...document.querySelectorAll(sel)].map((el) => el.textContent.trim());
+    return {
+      slideCount: cards.length,
+      allText: document.getElementById("slides-container").innerText,
+      contentBullets: textOf(".slide-card.slide-content ul li"),
+      summaryBullets: textOf(".slide-card.slide-summary ul li"),
+      titles: textOf(".slide-card h3"),
+    };
+  });
+  check("Turing deck builds with 7 slides", turingDeck.slideCount === 7, `${turingDeck.slideCount} slides`);
+  check("Turing deck has five content slides and a summary", turingDeck.titles.includes("Summary") && turingDeck.titles.includes("Formal definition") && turingDeck.titles.includes("Control and halting"));
+  // Slide text only: the speaker notes under each card carry the raw
+  // transcript detail on purpose, so the garble check reads titles and
+  // bullets, never the notes.
+  const turingSlideText = [...turingDeck.titles, ...turingDeck.contentBullets, ...turingDeck.summaryBullets].join(" ");
+  check("Turing deck has no ASR-noise bullet", !turingSlideText.includes("Same symbol Next is rules") && !turingSlideText.includes("after your after") && !turingSlideText.includes("this is this is"));
+  check("Turing deck has no timestamp on a slide", !/\b\d{1,2}:\d{2}\b/.test(turingSlideText));
+  check("Turing summary has one takeaway per idea slide", turingDeck.summaryBullets.length === 5, `${turingDeck.summaryBullets.length} summary bullets`);
+  check("Turing summary copies no content bullet", turingDeck.summaryBullets.every((b) => !turingDeck.contentBullets.includes(b)));
+  check("Turing summary is labelled with each idea title", ["The hierarchy", "The tape and its alphabet", "Tape operations", "Control and halting", "Formal definition"].every((t) => turingDeck.summaryBullets.some((b) => b.startsWith(t))));
+
   // ---- 7. Load the sample lecture ----------------------------------------------------
   await page.reload({ waitUntil: "load" });
   await page.click("#load-sample");
