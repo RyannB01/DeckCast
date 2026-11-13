@@ -1,0 +1,1 @@
+{"devDependencies":{"playwright-core":"^1.65.0"},"engines":{"node":">=22"},"name":"deckcast","private":true,"scripts":{"test":"node tests/run-tests.mjs && node tests/e2e.mjs","test:e2e":"node tests/e2e.mjs","test:unit":"node tests/run-tests.mjs"},"type":"module","version":"0.1.0"}
