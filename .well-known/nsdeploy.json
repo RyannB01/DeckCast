@@ -8,6 +8,15 @@
       "front_man": "deckcast_producer",
       "network": "deckcast",
       "url": "deckcast"
+    },
+    {
+      "aliases": [
+        "quiz_generator",
+        "quiz_generator_front"
+      ],
+      "front_man": "quiz_generator_front",
+      "network": "quiz_generator",
+      "url": "quiz_generator"
     }
   ],
   "imports": [],
