@@ -39,7 +39,7 @@
         <p>The deployed site sets no cookies, so there is no cookie banner. One exception exists only on local development runs: when the site runs on localhost, the runtime mirrors the saved provider profile to a same-site host cookie so settings follow across local ports. That cookie is never set on the deployed site.</p>
 
         <h2>Third parties</h2>
-        <p>DeckCast loads nothing from a third party: no fonts, scripts, styles, images, or analytics from anywhere else. The font is served from this site, and every library is vendored locally. The only request that ever leaves your browser is the AI provider call described above, which happens only after you enter a key and send a message.</p>
+        <p>DeckCast loads no fonts, scripts, styles, images, or analytics from a third party. The font is served from this site, and every library is vendored locally. Two kinds of request leave your browser, and only when you ask for them. The first is the AI provider call described above, which happens only after you enter a key and send a message. The second is the transcription model: the first time you transcribe audio, your browser downloads the Whisper model (about 44 MB) from Hugging Face, and keeps it in the browser cache for next time. That request is a download only. No audio, transcript, or key is sent to Hugging Face or anywhere else, and the transcription itself runs on your device.</p>
         <p>Links on the site go to other sites (Devpost, GitHub, and the AI providers' key pages). Those sites have their own privacy policies; DeckCast does not control them.</p>
 
         <h2>Questions</h2>
