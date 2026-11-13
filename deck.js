@@ -2,20 +2,57 @@
 // State lives here. deckcast-actions.js and site.js import from this module.
 // Rendering uses textContent only, never innerHTML with user or model text.
 
-import { extractOutline, buildSlides, verifyDeck, createPptx, slugify, countWords, stripTimestamps } from "./deckcast-core.js";
+import { extractOutline, buildSlides, verifyDeck, createPptx, slugify, countWords, stripTimestamps, cleanTranscript, diagramSvg, resolveExportTheme } from "./deckcast-core.js";
+import { transcribeBlob } from "./whisper.js";
 
 export const MAX_AUDIO_MB = 50;
+export const EXPORT_THEME_KEY = "deckcast-export-theme";
+
+// localStorage, guarded: absent in Node (unit tests) and in private mode.
+function storageGet(key) {
+  try { return typeof localStorage !== "undefined" ? localStorage.getItem(key) : null; } catch { return null; }
+}
+function storageSet(key, value) {
+  try { if (typeof localStorage !== "undefined") localStorage.setItem(key, value); } catch { /* private mode: the theme just does not stick */ }
+}
 
 export const app = {
   title: "",
   transcript: "",
-  transcriptSource: null, // "paste" | "mic" | "sample" | null
-  audioFile: null, // { name, size, url }
+  transcriptSource: null, // "paste" | "mic" | "mic-whisper" | "upload" | "sample" | null
+  audioFile: null, // { name, size, url, file }
   outline: null,
   slides: [],
   deckBuilt: false,
   recording: false,
+  // The export theme: the visitor's last choice, remembered in localStorage.
+  // Cream is the site palette and the default.
+  exportTheme: resolveExportTheme(storageGet(EXPORT_THEME_KEY)),
 };
+
+// Choose the export theme for the .pptx and the on-screen preview. The
+// choice is remembered in localStorage so it sticks across visits. An
+// unknown name falls back to cream.
+export function setExportTheme(name) {
+  const theme = resolveExportTheme(name);
+  app.exportTheme = theme;
+  storageSet(EXPORT_THEME_KEY, theme);
+  const picker = el("export-theme");
+  if (picker) picker.value = theme;
+  applyExportTheme();
+  renderDeck();
+  return { ok: true, theme };
+}
+export function getExportTheme() {
+  return app.exportTheme;
+}
+
+// Put the theme on the preview container so the slide cards follow it. The
+// site itself stays cream and blue; only the preview cards change.
+function applyExportTheme() {
+  const container = el("slides-container");
+  if (container) container.setAttribute("data-export-theme", app.exportTheme);
+}
 
 function el(id) {
   // Guarded so the pure state functions can be unit-tested in Node, where
@@ -93,7 +130,9 @@ export function getLectureState() {
 }
 
 export function setTranscript(text, source) {
-  const clean = String(text || "").trim();
+  // The stored transcript is the cleaned one: timestamps and filler words
+  // never reach the deck builder, the view, or the fact checker.
+  const clean = cleanTranscript(String(text || "").trim());
   if (!clean) return { ok: false, reason: "The transcript is empty." };
   app.transcript = clean;
   app.transcriptSource = source || "paste";
@@ -103,6 +142,51 @@ export function setTranscript(text, source) {
   renderTranscript();
   renderDeck();
   return { ok: true, words: countWords(clean), source: app.transcriptSource };
+}
+
+// Store a model-written outline on the page: the structure or slide_designer
+// agent's rewritten deck, after the deterministic pipeline has already
+// produced its own. The outline is validated (2-12 slides, titles at most
+// 80 characters, 0-5 bullets of at most 200 characters each, notes at most
+// 1000 characters) and cleaned defensively: timestamps and filler words are
+// stripped from titles, bullets and notes, and every bullet gets source null,
+// because a model-written bullet has no transcript sentence to point at. The
+// fact checker verifies source-less bullets against the whole transcript.
+export function setOutline(outline) {
+  if (!outline || typeof outline !== "object" || !Array.isArray(outline.slides)) {
+    return { ok: false, reason: "The outline needs a slides list." };
+  }
+  const title = String(outline.title || "").trim();
+  if (!title) return { ok: false, reason: "The outline needs a title." };
+  if (title.length > 80) return { ok: false, reason: "The outline title is longer than 80 characters." };
+  if (outline.slides.length < 2 || outline.slides.length > 12) {
+    return { ok: false, reason: "The outline needs between 2 and 12 slides." };
+  }
+  const types = new Set(["title", "content", "summary", "diagram"]);
+  const slides = [];
+  for (const slide of outline.slides) {
+    if (!slide || typeof slide !== "object") return { ok: false, reason: "Every slide needs a title and a type." };
+    const slideTitle = cleanTranscript(String(slide.title || "").trim());
+    if (!slideTitle) return { ok: false, reason: "Every slide needs a title." };
+    if (slideTitle.length > 80) return { ok: false, reason: `The slide "${slideTitle.slice(0, 40)}" has a title longer than 80 characters.` };
+    const type = types.has(slide.type) ? slide.type : "content";
+    const bullets = Array.isArray(slide.bullets) ? slide.bullets : [];
+    if (bullets.length > 5) return { ok: false, reason: `The slide "${slideTitle.slice(0, 40)}" has more than 5 bullets.` };
+    const cleanBullets = [];
+    for (const b of bullets) {
+      const text = cleanTranscript(String((b && b.text) || "").trim());
+      if (!text) continue;
+      if (text.length > 200) return { ok: false, reason: `A bullet on "${slideTitle.slice(0, 40)}" is longer than 200 characters.` };
+      cleanBullets.push({ text, source: null });
+    }
+    const notes = cleanTranscript(String(slide.notes || "").trim()).slice(0, 1000);
+    slides.push({ type, title: slideTitle, bullets: cleanBullets, notes, diagram: slide.diagram || null });
+  }
+  app.outline = { title: cleanTranscript(title), slides };
+  app.slides = buildSlides(app.outline);
+  app.deckBuilt = false;
+  renderDeck();
+  return { ok: true, slides: app.slides.length, title: app.outline.title };
 }
 
 export function buildOutline() {
@@ -153,9 +237,9 @@ export async function exportDeck() {
     downloadSlidesJson();
     return { ok: false, reason: "The slide exporter did not load, so the deck was downloaded as slide data (JSON) instead. Reload the page and try again for the .pptx file." };
   }
-  const pptx = createPptx(PptxGenJSClass, app.slides, app.title || "DeckCast deck");
+  const pptx = createPptx(PptxGenJSClass, app.slides, app.title || "DeckCast deck", app.exportTheme);
   await pptx.writeFile({ fileName });
-  return { ok: true, fileName, slideCount: app.slides.length };
+  return { ok: true, fileName, slideCount: app.slides.length, theme: app.exportTheme };
 }
 
 function downloadSlidesJson() {
@@ -223,6 +307,7 @@ function renderDeck() {
   const container = el("slides-container");
   const count = el("slide-count");
   if (!container) return;
+  applyExportTheme();
   clearNode(container);
   if (!app.slides.length) {
     const state = document.createElement("div");
@@ -255,6 +340,20 @@ function renderDeck() {
     title.textContent = slide.title;
     head.append(num, title);
     card.appendChild(head);
+    if (slide.diagram) {
+      // Diagram slides render as inline SVG in the chosen export theme, so
+      // the preview shows what the .pptx will look like. The SVG string is
+      // built from escaped text only, and parsed with DOMParser so no markup
+      // from a transcript or a model can become live HTML.
+      const parsed = new DOMParser().parseFromString(diagramSvg(slide.diagram, app.exportTheme), "image/svg+xml");
+      const svg = parsed.documentElement;
+      if (svg && svg.tagName.toLowerCase() === "svg") {
+        const wrap = document.createElement("div");
+        wrap.className = "diagram-wrap";
+        wrap.appendChild(document.importNode(svg, true));
+        card.appendChild(wrap);
+      }
+    }
     if (slide.bullets && slide.bullets.length) {
       const list = document.createElement("ul");
       slide.bullets.forEach((b) => {
@@ -282,15 +381,25 @@ let mediaStream = null;
 let micBuffer = "";
 let audioChunks = [];
 
-function micSupported() {
-  return !!SpeechRecognition && !!navigator.mediaDevices && !!navigator.mediaDevices.getUserMedia;
+let micMode = null; // "live" | "whisper" | null
+
+function micLiveSupported() {
+  return !!SpeechRecognition && typeof navigator !== "undefined" && !!navigator.mediaDevices && !!navigator.mediaDevices.getUserMedia;
+}
+
+function micWhisperSupported() {
+  return typeof window !== "undefined" && typeof MediaRecorder !== "undefined" && typeof navigator !== "undefined" && !!navigator.mediaDevices && !!navigator.mediaDevices.getUserMedia;
 }
 
 async function startMic() {
-  if (!micSupported()) {
-    setStatus(el("mic-status"), "Live transcription is not supported in this browser. Use Chrome or Edge, or paste a transcript instead.", "error");
-    return;
-  }
+  if (app.recording) return;
+  if (micLiveSupported()) return startMicLive();
+  if (micWhisperSupported()) return startMicWhisper();
+  setStatus(el("mic-status"), "Recording is not supported in this browser. Paste a transcript instead.", "error");
+}
+
+async function startMicLive() {
+  micMode = "live";
   if (app.recording) return;
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -346,6 +455,43 @@ async function startMic() {
   setStatus(el("mic-status"), "Listening. Speak clearly; the transcript appears below as you talk.", "info");
 }
 
+// Browsers without live speech recognition (Firefox, Safari) record with
+// MediaRecorder and transcribe the recording on this device with Whisper
+// when the user stops. Same pipeline as uploaded audio, same privacy: the
+// audio never leaves the browser.
+async function startMicWhisper() {
+  micMode = "whisper";
+  if (app.recording) return;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    setStatus(el("mic-status"), "Microphone access was denied. Allow microphone access, or paste a transcript instead.", "error");
+    micMode = null;
+    return;
+  }
+  mediaStream = stream;
+  micBuffer = "";
+  audioChunks = [];
+  try {
+    mediaRecorder = new MediaRecorder(mediaStream);
+    mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) audioChunks.push(e.data); };
+    mediaRecorder.start();
+  } catch (err) {
+    setStatus(el("mic-status"), "The microphone could not start in this browser. Paste a transcript instead.", "error");
+    mediaStream.getTracks().forEach((t) => t.stop());
+    mediaStream = null;
+    micMode = null;
+    return;
+  }
+  app.recording = true;
+  el("mic-start").disabled = true;
+  el("mic-stop").disabled = false;
+  const live = el("mic-live");
+  if (live) live.textContent = "Recording. Your words will be transcribed on this device after you stop.";
+  setStatus(el("mic-status"), "Recording. This browser has no live speech recognition, so Whisper transcribes the recording on this device after you stop. Nothing leaves the browser.", "info");
+}
+
 function stopMic() {
   if (!app.recording) return;
   app.recording = false;
@@ -366,12 +512,19 @@ function stopMic() {
 }
 
 function finishRecording() {
+  const mode = micMode;
+  micMode = null;
   const text = micBuffer.trim();
+  let blob = null;
   if (audioChunks.length) {
-    const blob = new Blob(audioChunks, { type: mediaRecorder ? mediaRecorder.mimeType || "audio/webm" : "audio/webm" });
+    blob = new Blob(audioChunks, { type: mediaRecorder ? mediaRecorder.mimeType || "audio/webm" : "audio/webm" });
     const url = URL.createObjectURL(blob);
-    app.audioFile = { name: "microphone-recording.webm", size: blob.size, url };
+    app.audioFile = { name: "microphone-recording.webm", size: blob.size, url, file: blob };
     showAudioFile();
+  }
+  if (mode === "whisper") {
+    finishRecordingWhisper(blob);
+    return;
   }
   if (text) {
     setTranscript(text, "mic");
@@ -383,8 +536,32 @@ function finishRecording() {
   if (live) live.textContent = "Your live transcription will appear here while you speak.";
 }
 
+async function finishRecordingWhisper(blob) {
+  const live = el("mic-live");
+  if (!blob) {
+    setStatus(el("mic-status"), "Recording stopped, but no audio was captured. Try again, or paste a transcript instead.", "error");
+    if (live) live.textContent = "Your transcription will appear here after you stop recording.";
+    return;
+  }
+  if (live) live.textContent = "Transcribing your recording on this device. This takes a moment.";
+  setStatus(el("mic-status"), "Recording stopped. Transcribing on this device (this takes a moment)...", "info");
+  try {
+    const result = await transcribeBlob(blob, {
+      onProgress: (p) => setStatus(el("mic-status"), p.message, "info"),
+    });
+    if (!result.text) {
+      setStatus(el("mic-status"), "Transcription finished, but no speech was recognised. Try again, or paste a transcript instead.", "error");
+      return;
+    }
+    setTranscript(result.text, "mic-whisper");
+    setStatus(el("mic-status"), `Recording transcribed on this device (${countWords(result.text)} words).`, "success");
+  } catch (err) {
+    setStatus(el("mic-status"), "Transcription failed on this device. Paste a transcript instead, or try again.", "error");
+  }
+}
+
 // ---- Audio file upload -------------------------------------------------------
-function handleAudioFile(file) {
+async function handleAudioFile(file) {
   const info = el("audio-info");
   if (!file) return;
   const isAudio = file.type.startsWith("audio/") || /\.(mp3|wav|m4a|ogg|webm|aac|flac)$/i.test(file.name);
@@ -397,9 +574,47 @@ function handleAudioFile(file) {
     return;
   }
   if (app.audioFile && app.audioFile.url) URL.revokeObjectURL(app.audioFile.url);
-  app.audioFile = { name: file.name, size: file.size, url: URL.createObjectURL(file) };
+  app.audioFile = { name: file.name, size: file.size, url: URL.createObjectURL(file), file };
   showAudioFile();
-  setStatus(info, `Loaded ${file.name}. Audio files are stored for playback only in this version; they are not transcribed yet. Paste a transcript or use the microphone to build a deck from this lecture.`, "info");
+  await transcribeUploadedAudio();
+}
+
+// Transcribe the uploaded file on this device with Whisper. The progress
+// bar covers both phases: model files loading (0-50) and transcription
+// (50-100). A failed run leaves the file in place for playback and shows
+// the retry button; the paste path is always there as a fallback.
+async function transcribeUploadedAudio() {
+  const info = el("audio-info");
+  const progress = el("audio-progress");
+  const retry = el("audio-retry");
+  const file = app.audioFile && app.audioFile.file;
+  if (!file) return;
+  if (retry) retry.hidden = true;
+  if (progress) { progress.hidden = false; progress.value = 0; }
+  // The file name stays visible through the whole run: every status line
+  // carries it, so the visitor always knows which file is being transcribed.
+  const prefix = `${file.name}: `;
+  setStatus(info, `${prefix}Starting transcription on this device...`, "info");
+  try {
+    const result = await transcribeBlob(file, {
+      onProgress: (p) => {
+        setStatus(info, `${prefix}${p.message}`, "info");
+        if (progress) progress.value = p.phase === "loading-model" ? Math.round(p.percent / 2) : 50 + Math.round(p.percent / 2);
+      },
+    });
+    if (progress) progress.hidden = true;
+    if (!result.text) {
+      setStatus(info, `${prefix}Transcription finished, but no speech was recognised in this file. Paste a transcript instead.`, "error");
+      if (retry) retry.hidden = false;
+      return;
+    }
+    setTranscript(result.text, "upload");
+    setStatus(info, `${prefix}Transcribed on this device (${countWords(result.text)} words). The transcript is below; press Build deck.`, "success");
+  } catch (err) {
+    if (progress) progress.hidden = true;
+    setStatus(info, `${prefix}Transcription failed on this device. Paste a transcript instead, or try again.`, "error");
+    if (retry) retry.hidden = false;
+  }
 }
 
 function showAudioFile() {
@@ -410,7 +625,7 @@ function showAudioFile() {
     player.src = app.audioFile.url;
     player.hidden = false;
   }
-  if (info && !info.textContent) {
+  if (info) {
     info.textContent = `${app.audioFile.name} (${Math.round(app.audioFile.size / 1024)} KB)`;
   }
 }
@@ -439,6 +654,14 @@ function wire() {
   if (titleInput) {
     titleInput.addEventListener("input", () => { app.title = titleInput.value.trim(); });
   }
+  // The export theme picker: the visitor's saved choice is already in
+  // app.exportTheme; the picker shows it, and a change re-themes the
+  // preview at once.
+  const themePicker = el("export-theme");
+  if (themePicker) {
+    themePicker.value = app.exportTheme;
+    themePicker.addEventListener("change", () => setExportTheme(themePicker.value));
+  }
   el("use-transcript").addEventListener("click", () => {
     const text = el("transcript-input").value;
     app.title = titleInput ? titleInput.value.trim() : "";
@@ -462,11 +685,15 @@ function wire() {
     setStatus(el("transcript-status"), "Transcript cleared.", "info");
   });
   el("audio-file").addEventListener("change", (e) => handleAudioFile(e.target.files && e.target.files[0]));
+  const audioRetry = el("audio-retry");
+  if (audioRetry) audioRetry.addEventListener("click", () => transcribeUploadedAudio());
   el("mic-start").addEventListener("click", startMic);
   el("mic-stop").addEventListener("click", stopMic);
-  if (!micSupported()) {
+  if (!micLiveSupported() && micWhisperSupported()) {
+    setStatus(el("mic-status"), "This browser has no live speech recognition, so your recording is transcribed on this device with Whisper after you stop. It takes a moment, and nothing leaves the browser.", "info");
+  } else if (!micLiveSupported()) {
     el("mic-start").disabled = true;
-    setStatus(el("mic-status"), "Live transcription needs a browser with speech recognition, such as Chrome or Edge. Paste a transcript instead.", "info");
+    setStatus(el("mic-status"), "Recording needs a browser with microphone support. Paste a transcript instead.", "info");
   }
   el("clear-view").addEventListener("click", () => {
     clearTranscript();
@@ -491,7 +718,7 @@ function wire() {
     btn.disabled = true;
     try {
       const result = await exportDeck();
-      setStatus(el("export-status"), result.ok ? `Exported ${result.fileName} (${result.slideCount} slides).` : result.reason, result.ok ? "success" : "error");
+      setStatus(el("export-status"), result.ok ? `Exported ${result.fileName} (${result.slideCount} slides, ${result.theme} theme).` : result.reason, result.ok ? "success" : "error");
     } catch (err) {
       setStatus(el("export-status"), "Export failed. Try again.", "error");
     } finally {
