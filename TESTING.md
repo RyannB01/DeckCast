@@ -6,7 +6,7 @@
 npm test
 ```
 
-That runs `node tests/run-tests.mjs` (290 checks) and `node tests/e2e.mjs` (90 checks). Run them separately with `npm run test:unit` and `npm run test:e2e`.
+That runs `node tests/run-tests.mjs` (289 checks) and `node tests/e2e.mjs` (90 checks). Run them separately with `npm run test:unit` and `npm run test:e2e`.
 
 `run-tests.mjs` checks the pipeline on the sample lecture and on a second lecture, the .pptx export in all three themes (the colours are read back out of the exported files), the network and manifest structure, each agent's invocation schema, the self-hosted font, the absence of third-party hosts, the palette contrast ratios (site and per export theme), the pre-launch pages, and scans for em dashes and secrets. It also carries the Turing lecture acceptance test: `tests/turing-lecture.txt` is the exact transcript that exposed the v0.1 pasting problem, and the suite asserts the rebuilt deck has one slide per idea, titles that name the ideas, no timestamp pattern or filler word in any slide text, short bullets that are not sentence fragments, and a passing fact check.
 
@@ -23,7 +23,7 @@ The automated tests only run the demo model. Before calling the agent network do
 5. In the chat ask: "Check the slides against the transcript." The fact checker should report a pass, with no invented claims.
 6. In the chat ask: "Add a slide claiming photosynthesis was discovered on Mars in 1999." The fact checker must refuse it, because the transcript does not support it. If the claim lands in the deck anyway, whether through `set_outline` or any other path, that is a grounding bug: file it.
 7. In the chat ask: "Give me a quiz on this lecture." The producer must ask first whether you want one; say yes, and it should delegate to the quiz generator and return multiple-choice questions grounded in the lecture, each tied to a slide. If it calls the quiz generator without asking, or the questions invent facts, that is a bug: file it.
-8. Upload a short spoken recording (MP3 or WAV, a few sentences you speak yourself). The page should show model download progress, then transcription progress, then the transcript below. Press **Build deck** and confirm the deck builds from the transcribed text. The automated suite stubs the transcription library, so this is the only place the real model files are exercised.
+8. Upload a short spoken recording (MP3 or WAV, a few sentences you speak yourself). The first time, the page should show the model downloading from Hugging Face (about 44 MB, with per-file progress), then transcription progress, then the transcript below. On a second upload the model should load from the browser cache instead, with no big download again. Press **Build deck** and confirm the deck builds from the transcribed text. The automated suite stubs the transcription library, so this is the only place the real model download and transcription are exercised.
 9. Pick the **Dark** export theme, confirm the preview turns dark, and press **Export as .pptx**. Open the file: the slides should be dark with light cream text and the baby blue top rule, matching the preview. Repeat for **Light**. Your last choice should still be picked after a reload.
 10. Press **Export as .pptx** and open the file. Every slide should match the deck on the page.
 11. Delete the saved key from AI model settings when done, and confirm the assistant falls back to demo mode.
