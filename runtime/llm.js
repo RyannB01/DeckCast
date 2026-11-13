@@ -11,6 +11,57 @@ export function isMockResponse(configuredMock, routeKind, model) {
   return !!configuredMock || routeKind === "mock" || /neuro-san-mock/.test(model || "");
 }
 
+// A 429 (rate limit) is transient: the provider is telling us to wait, not
+// that the key is bad. Retry the call after the delay the provider suggests,
+// instead of failing the turn on the first 429. The delay is the LONGEST
+// suggestion the provider gives: the Retry-After header and the body's
+// "try again in Xs" phrase (Groq's wording) can disagree, and waiting only
+// the shorter one earns another 429, because the tokens that tripped the
+// limit are still inside the provider's rolling window. When neither is
+// given, wait a short default. Each wait is capped so a turn is never
+// stalled for minutes; the turn's own 90-second deadline is the outer
+// bound. Only 429s are retried: any other HTTP error fails at once.
+export const LLM_429_MAX_RETRIES = 2; // up to 3 attempts per call
+export const LLM_429_MAX_WAIT_MS = 60_000;
+export const LLM_429_DEFAULT_WAIT_MS = 5_000;
+
+function parseRetryAfter(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000));
+  const date = Date.parse(value);
+  if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  return null;
+}
+
+export function retryAfterMs(resp, bodyText) {
+  const candidates = [];
+  const fromHeader = parseRetryAfter(resp?.headers?.get?.("Retry-After"));
+  if (fromHeader !== null) candidates.push(fromHeader);
+  const body = String(bodyText || "");
+  const inBody = /try again in\s+([\d.]+)\s*s/i.exec(body)
+    || /retry(?:-after)?[:\s]+([\d.]+)/i.exec(body);
+  if (inBody) candidates.push(Math.round(parseFloat(inBody[1]) * 1000));
+  if (!candidates.length) return LLM_429_DEFAULT_WAIT_MS;
+  return Math.min(Math.max(...candidates), LLM_429_MAX_WAIT_MS);
+}
+
+function sleepWithAbort(ms, signal) {
+  if (ms <= 0) return Promise.resolve();
+  if (signal?.aborted) return Promise.reject(signal.reason || new Error("Aborted"));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason || new Error("Aborted"));
+    };
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+  });
+}
+
 export function browserMockCompletion(messages = [], tools = []) {
   const called = new Set(messages.filter((m) => m?.role === "tool" && m.name).map((m) => m.name));
   const available = (tools || []).map((tool) => tool?.function).filter((fn) => fn?.name);
@@ -119,15 +170,28 @@ export class LlmClient {
       if (hostOf(this.baseUrl) === "api.anthropic.com") {
         headers["anthropic-dangerous-direct-browser-access"] = "true";
       }
-      const resp = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal,
-      });
-      if (!resp.ok) {
-        const txt = await resp.text().catch(() => "");
-        throw new Error(`LLM HTTP ${resp.status}: ${txt.slice(0, 300)}`);
+      // A 429 waits and retries (see retryAfterMs above). Any other HTTP
+      // error fails at once. The trace span stays open across retries, so
+      // the "not verified" state only resolves when a call finally succeeds
+      // or fails for good: a retried 429 never flashes an error.
+      let resp;
+      let lastBody = "";
+      for (let attempt = 0; ; attempt++) {
+        signal?.throwIfAborted?.();
+        resp = await fetch(`${this.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal,
+        });
+        if (resp.ok) break;
+        lastBody = await resp.text().catch(() => "");
+        if (resp.status !== 429 || attempt >= LLM_429_MAX_RETRIES) {
+          throw new Error(`LLM HTTP ${resp.status}: ${lastBody.slice(0, 300)}`);
+        }
+        const waitMs = retryAfterMs(resp, lastBody);
+        this.trace?.update(span, { retry: `429, retry ${attempt + 1} of ${LLM_429_MAX_RETRIES} after ${Math.round(waitMs / 1000)}s` });
+        await sleepWithAbort(waitMs, signal);
       }
 
       const routeKind = resp.headers.get("X-Nsdeploy-LLM-Route") || "";
