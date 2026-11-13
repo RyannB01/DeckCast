@@ -1,0 +1,10 @@
+{
+  "networks": [
+    {
+      "name": "deckcast"
+    }
+  ],
+  "actions": {
+    "version": 1
+  }
+}
