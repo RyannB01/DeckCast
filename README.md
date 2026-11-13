@@ -6,14 +6,14 @@ Built for the [Open Agentic Web Challenge](https://cognizant-agenticweb.devpost.
 
 ## How it works
 
-Give it a lecture in one of three ways: paste a transcript, record with your microphone, or upload an audio file for playback. Four specialist agents turn it into a deck:
+Give it a lecture in one of three ways: paste a transcript, record with your microphone, or upload an audio file, which is transcribed on the device with Whisper. Four specialist agents turn it into a deck:
 
 - **transcriber** turns the lecture into a transcript and stores text you paste in chat.
-- **structure** reads the transcript and drafts the slide outline: title, one idea per slide, bullets and speaker notes.
-- **slide_designer** turns the outline into slide content: layout, concise slide text and simple visuals.
+- **structure** reads the transcript and drafts the slide outline: title, one idea per slide, bullets and speaker notes. With a real model key it rewrites each idea into short bullets in its own words; without one, the deterministic pipeline does the same job from key sentences.
+- **slide_designer** turns the outline into slide content: layout, concise slide text and simple visuals. With a real model key it refines the wording through the model; without one, the deterministic outline stands.
 - **fact_checker** verifies every slide claim against the transcript and flags anything not grounded in it. No invented content, ever.
 
-The front agent, **deckcast_producer**, orchestrates the four specialists and talks to you. The agents act on the page through six site actions: `get_lecture_state`, `set_transcript`, `build_outline`, `render_slides`, `verify_deck`, `export_deck`.
+The front agent, **deckcast_producer**, orchestrates the four specialists and talks to you. The agents act on the page through seven site actions: `get_lecture_state`, `set_transcript`, `build_outline`, `set_outline`, `render_slides`, `verify_deck`, `export_deck`.
 
 DeckCast is an open agentic website: the agent network is published as data (`agent-manifest.json`, `deckcast.network.json`), runs in your browser, and follows the [Open Agentic Web MVP spec](https://github.com/cognizant-ai-labs/agentic-web) (Profile 0.2).
 
@@ -23,7 +23,7 @@ DeckCast is an open agentic website: the agent network is published as data (`ag
 python3 -m http.server 8901
 ```
 
-Then open http://127.0.0.1:8901/ in Chrome or Edge. No build step, no server code, no install.
+Then open http://127.0.0.1:8901/ in any modern browser. No build step, no server code, no install.
 
 The fastest demo: press **Load the sample lecture**, then **Build deck**, then **Export as .pptx**. The sample is a short lecture on photosynthesis in `sample-lecture.txt`.
 
@@ -43,28 +43,61 @@ How to tell it worked: after you paste a key, the assistant panel shows an **LLM
 ## Privacy
 
 - **Fonts are self-hosted.** The only webfont is IBM Plex Sans, served from `fonts/` on the same origin. No Google Fonts, no font CDN.
-- **No analytics, no trackers, no external scripts, styles or images.** Everything the page loads comes from the same origin: PptxGenJS is vendored in `vendor/`, the nsdeploy runtime lives in `runtime/`.
+- **No analytics, no trackers, no external scripts, styles or images.** Everything the page loads comes from the same origin: PptxGenJS is vendored in `vendor/`, the nsdeploy runtime lives in `runtime/`, and the Whisper transcription model lives in `vendor/models/`.
+- **Transcription stays on the device.** Uploaded audio and microphone recordings are transcribed in the browser with Whisper (tiny, quantized). The model files are vendored in the repo, so nothing is fetched from Hugging Face and no audio ever leaves the browser.
 - **The only outbound request the site ever makes is your own LLM call**, and only after you enter a key and send a chat message, and only to the provider you chose. The demo model makes no network calls at all.
 - **The deployed site sets no cookies.**
 
-## What's in v0.1
+## Deck quality: rewriting, not pasting
 
-- Paste a transcript, load the sample lecture, or record with the microphone (Chrome or Edge) with live transcription and an audio recording kept for playback.
+A spoken lecture is full of timestamps, filler words and false starts, and a deck built from raw chunks reads like a transcript pasted onto slides. DeckCast cleans first, then rewrites:
+
+- **Cleaning.** Timestamps (0:09, 2:23) and filler words and phrases (uh, um, okay?, so, you know) are stripped from the transcript before anything is built from it. No timestamp or filler word can ever appear on a slide.
+- **Ideas, not chunks.** The transcript is segmented into the lecture's real ideas. One idea is one slide: a real title naming the idea, 2 to 4 short bullets in the lecturer's meaning but never their verbatim words, and the transcript detail in the speaker notes.
+- **Two ways to rewrite.** With a real model key, the structure and slide_designer agents rewrite the deck through the model and store it with the `set_outline` action; the producer tells the agents whether a real model is available. Without a key, the deterministic pipeline does the same job from key sentences: compressed clauses, no verbatim chunks. Either way the fact checker verifies every bullet against the transcript, including model-written bullets, which carry no source sentence and are checked against the whole transcript.
+- **Acceptance test.** `tests/turing-lecture.txt` is the exact Turing machine lecture that exposed the v0.1 pasting problem. The rebuilt deck has a title slide, five idea slides (hierarchy, tape and alphabet, tape operations, control and halting, formal definition) and a summary, with no timestamps or fillers anywhere and every claim passing the fact checker. The Node suite asserts all of it.
+
+## Whisper transcription
+
+Uploaded audio and microphone recordings in browsers without live speech recognition are transcribed on the device with Whisper (tiny, quantized, English-only) via transformers.js. The tradeoff: the model files are large, about 44 MB (the whole `vendor/` folder is 63 MB). They are vendored into the repo instead of being downloaded from Hugging Face on first use, because the repo can hold them (the largest single file is 30.7 MB, under GitHub's 100 MB per-file limit) and vendoring means no model download ever leaves the origin and no visitor waits on a third party. The first transcription on a visit loads the model files from this origin (the browser cache keeps them for the next visit); progress shows model download first, then transcription. Measured in headless Chromium: a 33.6 second recording transcribed in 11.6 seconds, about 0.34x real time. The automated tests stub the transcription library (see `TESTING.md`); a real run is a manual step.
+
+## Quiz peer
+
+DeckCast delegates to one sibling network in the same repo, a quiz generator (`quiz_generator.hocon`, `quiz_generator.network.json`): given the lecture topic, slide titles and a short transcript excerpt, it writes multiple-choice quiz questions. The producer calls it by its public URL only after the visitor agrees in chat; the same-origin call gets no runtime consent card, so the producer must ask first. The quiz generator receives only the request text, never the chat history and never private context, and `sly_data` is deny-by-default across the boundary. The manifest peer policy stays closed: no other peer networks are called.
+
+## Export themes
+
+The exported .pptx has its own theme, picked in the **Export theme** menu next to the Export button. The site stays cream and blue; the export is independent:
+
+- **Cream** (default): the site palette, cream background, dark brown ink, baby blue accent.
+- **Light**: white background, dark ink, a restrained steel-blue accent.
+- **Dark**: deep brown-charcoal background, light cream text, baby blue accent.
+
+The on-screen preview shows the chosen theme, so what you see is what the .pptx will look like, including the diagram slides. Your last choice is remembered in localStorage. Every text pair in every theme passes WCAG AA (4.5:1); the tests assert the ratios and read the colours back out of the exported .pptx files.
+
+## Design
+
+Brown and cream plus baby blue. Paper `#F3E9D7`, card `#FAF6EF`, ink `#2B1D12`, muted brown `#6B5847`, baby blue `#8EC8EE` (ink text on it), soft tint `#E8F1F8`, borders `#E3D9CB`. Colours are defined in OKLCH with hex fallbacks. The baby-blue call to action is the only saturated colour on the site; cream stays the dominant field, blue is the accent. Fonts are self-hosted IBM Plex Sans, no Google Fonts. No em dashes in user-visible text (the Bring your own key section above is the one exception, kept verbatim), no emojis in the UI, no gradients, no Inter, no Lucide.
+
+## What's in v0.2
+
+- Paste a transcript, load the sample lecture, record with the microphone, or upload an audio file: uploaded audio is transcribed on the device with Whisper, with model download and transcription progress, a retry button, and playback.
+- Microphone beyond Chrome and Edge: browsers without live speech recognition record with MediaRecorder and transcribe with Whisper after stopping.
+- Deck quality: cleaned transcripts, idea segmentation, rewritten titles and short bullets, speaker notes carrying the detail, and the Turing lecture acceptance test.
+- Diagram slides: a process flow when the transcript states steps in order, and a bar chart when it states numbers for the same unit, drawn as inline SVG in the browser and as shapes in the .pptx, and fact checked like any other slide.
+- A real peer network: the quiz generator sibling network, delegated to with the visitor's agreement in chat.
+- Export themes: Cream, Light and Dark for the .pptx, with a themed preview and the choice remembered.
 - Deterministic outline and deck building: every bullet comes from a transcript sentence and keeps a link to its source sentence.
-- Deterministic fact check: each bullet is checked against its source sentence, and failures are reported with slide and line.
+- Deterministic fact check: each bullet is checked against its source sentence, and failures are reported with slide and line. Model-written bullets are checked against the whole transcript.
 - Slide rendering in the browser and real .pptx export (PptxGenJS, vendored locally in `vendor/`).
-- The agent network boots in the browser from `agent-manifest.json` and `deckcast.network.json`, with the chat panel, the AI model settings panel, and the six site actions wired in.
+- The agent network boots in the browser from `agent-manifest.json` and `deckcast.network.json`, with the chat panel, the AI model settings panel, and the seven site actions wired in.
 - Mobile layout, mobile menu, favicon, custom 404 page, and a Content Security Policy.
 - Privacy and terms pages, sitemap and robots.txt, a social preview image, and Open Graph tags.
 - A GitHub Actions workflow that runs the full test suite on every push.
 
-## Not yet in v0.1
+## Not yet in v0.2
 
-- **Uploaded audio is not transcribed.** Audio files are stored for playback only. Transcription of uploaded files (Whisper in the browser) is a later version.
-- **No diagram slides yet.** The slide designer can suggest simple diagrams in chat, but the renderer only draws title, bullet and summary slides.
-- **No peer networks.** The manifest declares a closed peer policy. Cross-site agent calls are a later version.
 - **No real-model test has run in a browser yet.** A live run with a real provider key still needs to be done by hand; see `TESTING.md`.
-- **The microphone needs Chrome or Edge.** Other browsers get a clear message and the paste path instead.
 
 ## Tests
 
@@ -73,6 +106,10 @@ npm test
 ```
 
 That runs the Node suite (`node tests/run-tests.mjs`) and the Playwright end-to-end suite (`node tests/e2e.mjs`). Run them separately with `npm run test:unit` and `npm run test:e2e`. Run `npm install` first, once, for the Playwright driver (`playwright-core`).
+
+## Commits
+
+Commit messages read like a person wrote them: natural, varied, specific about what changed and why. No AI-sign-off wording, no emojis.
 
 ## Hosting
 
