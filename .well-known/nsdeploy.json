@@ -1,0 +1,18 @@
+{
+  "exports": [
+    {
+      "aliases": [
+        "deckcast",
+        "deckcast_producer"
+      ],
+      "front_man": "deckcast_producer",
+      "network": "deckcast",
+      "url": "deckcast"
+    }
+  ],
+  "imports": [],
+  "link_updates": {
+    "mode": "browser-local"
+  },
+  "protocol": "nsdeploy-link/v1"
+}
