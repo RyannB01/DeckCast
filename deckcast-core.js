@@ -721,6 +721,52 @@ export function isFragmentBullet(text) {
   if (/[0-9δΣΓ□→=]/.test(t)) return false;
   return countWords(t) < 5;
 }
+// ---- Readability guard -------------------------------------------------------
+// Spoken lectures garble: a repeated-word run ("this is this is", "after your
+// after", "read the read") means the ASR lost the sentence, and the line
+// reads as noise on a slide. Detect it from the word sequence alone:
+// a word repeated at once ("it it" is already collapsed by cleaning, but a
+// repeated phrase survives), a word repeated with exactly one word between
+// it ("after your after", "read the read"), or a two-word phrase repeated
+// at once ("this is this is"). Single content words only repeat like this
+// by accident in real lecture lines: "move one step left or one step right"
+// repeats words with three words between them, so it is not flagged.
+export function isGarbledText(text) {
+  const words = String(text || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(Boolean);
+  for (let i = 0; i < words.length; i += 1) {
+    if (words[i] === words[i + 1]) return true;
+    if (i + 2 < words.length && words[i] === words[i + 2] && words[i].length >= 3) return true;
+    if (i + 3 < words.length && words[i] === words[i + 2] && words[i + 1] === words[i + 3]) return true;
+  }
+  return false;
+}
+
+// ---- Summary: restate, never repeat ------------------------------------------
+// The summary restates one takeaway per idea slide, labelled with that
+// slide's title, instead of repeating the lecture's most central sentences
+// verbatim. A verbatim repeat copies the worst bullets (a garbled line can
+// be "central" by word frequency), so the summary only ever uses bullets
+// that passed the readability guard, and the title prefix makes each line a
+// restatement of the idea rather than a copy of a bullet.
+export function buildSummaryBullets(contentSlides) {
+  const out = [];
+  for (const slide of contentSlides || []) {
+    const clean = (slide.bullets || []).filter((b) => b.text && !isGarbledText(b.text));
+    if (!clean.length) continue;
+    const takeaway = clean[0];
+    let text = `${slide.title}: ${takeaway.text}`;
+    if (text.length > 190) {
+      const maxTakeaway = Math.max(40, 190 - slide.title.length - 2);
+      const cut = takeaway.text.slice(0, maxTakeaway);
+      const short = cut.slice(0, cut.lastIndexOf(" ")).trim() || cut.trim();
+      text = `${slide.title}: ${short}`;
+    }
+    out.push({ text, source: takeaway.source ?? null });
+    if (out.length >= 5) break;
+  }
+  return out;
+}
+
 // Build an outline from a transcript. Returns { title, slides } where each slide is
 // { type: "title" | "content" | "diagram" | "summary", title, bullets: [{ text, source }], notes }.
 // Slides are built per IDEA, not per sentence chunk: each idea gets a title
@@ -801,9 +847,9 @@ export function extractOutline(transcript, title) {
     const covered = new Set();
     const picked = [];
     const keywords = titleKeywords(titleForIdea(seg, segments));
-    // Pick six candidates: a pick can still be dropped later as a fragment
-    // or as too short, so the slide is not starved when one is.
-    while (picked.length < 6 && pool.length) {
+    // Pick eight candidates: a pick can still be dropped later as a fragment,
+    // as too short, or as garbled, so the slide is not starved when one is.
+    while (picked.length < 8 && pool.length) {
       let bestIdx = 0;
       let bestScore = -1;
       pool.forEach((s, k) => {
@@ -825,7 +871,7 @@ export function extractOutline(transcript, title) {
     // sentences fill the slide before a better later pick is reached.
     for (const k of key) {
       const text = compressBullet(k.sentence);
-      if (!text || text.length < 15 || isFragmentBullet(text)) continue;
+      if (!text || text.length < 15 || isFragmentBullet(text) || isGarbledText(text)) continue;
       const sig = text.slice(0, 40).toLowerCase();
       if (seen.has(sig)) continue;
       seen.add(sig);
@@ -865,15 +911,14 @@ export function extractOutline(transcript, title) {
       diagram: { kind: "bars", unit: diagrams.bars.unit, bars: diagrams.bars.bars },
     });
   }
-  // Summary: the three most central sentences of the whole lecture, cleaned.
-  const scored = scoreSentences(sentences)
-    .filter((s) => countWords(s.sentence) >= 4)
-    .sort((a, b) => b.score - a.score || a.index - b.index);
-  const topThree = scored.slice(0, 3).sort((a, b) => a.index - b.index);
+  // Summary: one restated takeaway per idea slide, labelled with its title.
+  // It never copies a bullet verbatim, and a garbled bullet can never reach
+  // it, because buildSummaryBullets only uses bullets that passed the guard.
+  const contentSlides = slides.filter((s) => s.type === "content");
   slides.push({
     type: "summary",
     title: "Summary",
-    bullets: topThree.map((k) => ({ text: compressBullet(k.sentence), source: k.index })).filter((b) => b.text.length >= 15 && !isFragmentBullet(b.text)),
+    bullets: buildSummaryBullets(contentSlides),
     notes: "",
   });
   return { title: cleanTitle, slides };
