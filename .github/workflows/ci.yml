@@ -1,0 +1,32 @@
+# DeckCast CI: every push runs the full test suite before the change ships.
+# git push -> install -> run the tests -> ship. A red build blocks the release.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # DeckCast has no runtime dependencies; the only install is the
+      # Playwright test browser plus the dev dependency itself.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install the Playwright Chromium browser
+        run: npx -y playwright@latest install --with-deps chromium
+
+      - name: Run the test suite (unit + integration + end-to-end)
+        run: npm test
