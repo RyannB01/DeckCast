@@ -2,15 +2,27 @@
 // Run: node tests/e2e.mjs  (or npm run test:e2e, or npm test for the full suite)
 // Exit code 0 means every check passed.
 //
-// Paths covered: paste transcript -> build deck -> view slides -> export .pptx;
-// load sample; upload audio; microphone fallback; assistant boot + mock chat;
-// privacy/terms/robots/sitemap/og-image; custom 404; mobile layout; the
-// third-party network audit; page load and generation timings.
+// Paths covered: paste transcript -> build deck -> view slides (with inline
+// diagram SVGs) -> export .pptx; load sample; upload audio with the stubbed
+// Whisper library (first transcription throws, retry succeeds, and it stays
+// good across a reload); microphone fallback; assistant boot + mock chat;
+// privacy/terms/robots/sitemap/og-image; peer network files published;
+// custom 404; mobile layout; the third-party network audit; page load and
+// generation timings.
 import { createServer } from "node:http";
 import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+import { pptxSlideXml } from "./pptx-zip.mjs";
+
+// "rgb(46, 36, 26)" -> "2E241A", for comparing a preview colour with the
+// colour baked into the exported .pptx.
+function rgbToHex(rgb) {
+  const m = String(rgb || "").match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (!m) return "";
+  return [1, 2, 3].map((i) => Number(m[i]).toString(16).padStart(2, "0")).join("").toUpperCase();
+}
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 8901;
@@ -48,6 +60,7 @@ const MIME = {
   ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript",
   ".json": "application/json", ".css": "text/css", ".svg": "image/svg+xml",
   ".txt": "text/plain", ".woff2": "font/woff2", ".png": "image/png", ".xml": "application/xml",
+  ".wasm": "application/wasm",
 };
 const server = createServer((req, res) => {
   const url = decodeURIComponent(req.url.split("?")[0]);
@@ -102,6 +115,33 @@ try {
     if (msg.type() === "error") pageErrors.push(`console.error: ${msg.text().slice(0, 200)}`);
   });
 
+  // ---- Whisper stub: the real vendored library is 900 KB plus 44 MB of model
+  // files, so the upload test intercepts it with a small stand-in that speaks
+  // the same API (env plus pipeline returning a transcriber). The stand-in
+  // throws on its first transcription call and returns a fixture transcript
+  // after that; the call count lives in localStorage, so it stays good across
+  // a page reload. This covers the upload error path, the retry button, and
+  // the success path without downloading the model in CI.
+  const WHISPER_FIXTURE = "Photosynthesis is how plants make food from sunlight. The light reactions split water and release oxygen. The Calvin cycle fixes carbon dioxide into sugar.";
+  const WHISPER_STUB = `
+export const env = { allowRemoteModels: true, allowLocalModels: true, localModelPath: "", backends: { onnx: { wasm: { wasmPaths: "", numThreads: 1 } } } };
+export async function pipeline(task, model, options) {
+  const cb = options && options.progress_callback;
+  if (cb) {
+    cb({ status: "progress", file: "onnx/encoder_model_quantized.onnx", loaded: 50, total: 100 });
+    cb({ status: "progress", file: "onnx/encoder_model_quantized.onnx", loaded: 100, total: 100 });
+  }
+  return async (samples, opts) => {
+    const key = "deckcast-whisper-stub-calls";
+    const n = Number(window.localStorage.getItem(key) || "0") + 1;
+    window.localStorage.setItem(key, String(n));
+    if (n === 1) throw new Error("stubbed transcription failure");
+    return { text: ${JSON.stringify(WHISPER_FIXTURE)} };
+  };
+}
+`;
+  await page.route("**/vendor/transformers.min.js", (route) => route.fulfill({ contentType: "text/javascript", body: WHISPER_STUB }));
+
   // ---- 1. Page loads ---------------------------------------------------------
   const loadStart = Date.now();
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
@@ -155,6 +195,15 @@ try {
     return delays[0] === "0ms" && delays[1] === "40ms";
   }));
   check("skeleton is gone once the deck renders", (await page.locator(".slide-skeleton").count()) === 0);
+  check("diagram slides render as inline SVG", (await page.locator(".diagram-wrap svg").count()) >= 2, `${await page.locator(".diagram-wrap svg").count()} SVGs`);
+  check("flow diagram names its steps", await page.evaluate(() => {
+    const text = [...document.querySelectorAll(".diagram-wrap svg")].map((s) => s.textContent).join(" ");
+    return text.toLowerCase().includes("light-dependent") && text.includes("Calvin cycle") && text.includes("G3P");
+  }));
+  check("bar chart names its labels", await page.evaluate(() => {
+    const text = [...document.querySelectorAll(".diagram-wrap svg")].map((s) => s.textContent).join(" ");
+    return text.includes("Carbon dioxide") && text.includes("Water") && text.includes("Glucose") && text.includes("Oxygen");
+  }));
 
   // ---- 6. Export the .pptx ---------------------------------------------------------
   const exportStart = Date.now();
@@ -170,19 +219,88 @@ try {
   check("export finishes in under 10s", exportMs < 10000, `${exportMs}ms`);
   check("export status reports the file", await page.locator("#export-status").innerText().then((t) => t.includes(".pptx")));
 
+  // ---- 6b. Export themes: picker, themed preview, themed export, persistence ----
+  check("export theme picker is present with three options", (await page.locator("#export-theme option").count()) === 3);
+  check("export theme defaults to cream", (await page.locator("#export-theme").inputValue()) === "cream");
+  await page.selectOption("#export-theme", "dark");
+  await page.waitForFunction(() => document.querySelector("#slides-container").getAttribute("data-export-theme") === "dark", null, { timeout: 5000 });
+  const darkCardBg = await page.locator(".slide-card:not(.slide-title)").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+  const darkTitleBg = await page.locator(".slide-card.slide-title").evaluate((el) => getComputedStyle(el).backgroundColor);
+  check("dark preview shows the dark card colour", darkCardBg === "rgb(46, 36, 26)", darkCardBg);
+  check("dark preview shows the darker title colour", darkTitleBg === "rgb(34, 26, 18)", darkTitleBg);
+  check("dark choice is remembered", (await page.evaluate(() => window.localStorage.getItem("deckcast-export-theme"))) === "dark");
+  const darkDownloadPromise = page.waitForEvent("download", { timeout: 15000 });
+  await page.click("#export-deck");
+  const darkDownload = await darkDownloadPromise;
+  const darkPath = path.join(DL_DIR, `dark-${darkDownload.suggestedFilename()}`);
+  await darkDownload.saveAs(darkPath);
+  const darkBytes = readFileSync(darkPath);
+  const darkXml = pptxSlideXml(darkBytes.toString("base64"));
+  check("dark export is a real .pptx", darkBytes[0] === 0x50 && darkBytes[1] === 0x4b);
+  check("dark export carries the dark colours", darkXml.includes("221A12") && darkXml.includes("2E241A") && darkXml.includes("C9BBA6"));
+  check("dark export carries no cream colours", !darkXml.includes("F3E9D7") && !darkXml.includes("6B9CC4"));
+  check("preview matches the export (dark)", darkXml.includes(rgbToHex(darkCardBg)) && rgbToHex(darkCardBg) === "2E241A", `${darkCardBg} -> ${rgbToHex(darkCardBg)}`);
+  await page.selectOption("#export-theme", "light");
+  await page.waitForFunction(() => document.querySelector("#slides-container").getAttribute("data-export-theme") === "light", null, { timeout: 5000 });
+  const lightCardBg = await page.locator(".slide-card:not(.slide-title)").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+  check("light preview shows white cards", lightCardBg === "rgb(255, 255, 255)", lightCardBg);
+  const lightDownloadPromise = page.waitForEvent("download", { timeout: 15000 });
+  await page.click("#export-deck");
+  const lightDownload = await lightDownloadPromise;
+  const lightPath = path.join(DL_DIR, `light-${lightDownload.suggestedFilename()}`);
+  await lightDownload.saveAs(lightPath);
+  const lightBytes = readFileSync(lightPath);
+  const lightXml = pptxSlideXml(lightBytes.toString("base64"));
+  check("light export is a real .pptx", lightBytes[0] === 0x50 && lightBytes[1] === 0x4b);
+  check("light export carries the light colours", lightXml.includes("FFFFFF") && lightXml.includes("6B9CC4"));
+  check("light export carries no cream or dark colours", !lightXml.includes("F3E9D7") && !lightXml.includes("221A12"));
+  check("preview matches the export (light)", lightXml.includes(rgbToHex(lightCardBg)) && rgbToHex(lightCardBg) === "FFFFFF", `${lightCardBg} -> ${rgbToHex(lightCardBg)}`);
+  // The choice sticks across a reload: the picker, localStorage, and the
+  // preview after a rebuild all keep the light theme.
+  await page.reload({ waitUntil: "load" });
+  check("theme picker keeps the choice across reload", (await page.locator("#export-theme").inputValue()) === "light");
+  check("theme stays in localStorage across reload", (await page.evaluate(() => window.localStorage.getItem("deckcast-export-theme"))) === "light");
+  await page.click("#load-sample");
+  await page.waitForFunction(() => document.getElementById("transcript-view").textContent.includes("photosynthesis"), null, { timeout: 5000 });
+  await page.click("#build-deck");
+  await page.waitForSelector(".slide-card:not(.slide-skeleton)", { timeout: 10000 });
+  const reloadedBg = await page.locator(".slide-card:not(.slide-title)").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+  check("preview keeps the theme after reload and rebuild", reloadedBg === "rgb(255, 255, 255)", reloadedBg);
+  await page.selectOption("#export-theme", "cream");
+  check("theme returns to cream", (await page.evaluate(() => window.localStorage.getItem("deckcast-export-theme"))) === "cream");
+
   // ---- 7. Load the sample lecture ----------------------------------------------------
   await page.reload({ waitUntil: "load" });
   await page.click("#load-sample");
   await page.waitForFunction(() => document.getElementById("transcript-view").textContent.includes("photosynthesis"), null, { timeout: 5000 });
   check("sample lecture loads into the view", await page.locator("#transcript-words").innerText().then((t) => t.includes("words")));
 
-  // ---- 8. Upload audio ------------------------------------------------------------------
+  // ---- 8. Upload audio: stubbed Whisper, throw then good, across reload --------
+  // The vendored Whisper library is intercepted by the stub installed above:
+  // the first transcription throws, the retry succeeds, and after a reload
+  // the stub is already good. The tone file has no speech, but the stub
+  // returns its fixture transcript either way.
+  await page.evaluate(() => window.localStorage.removeItem("deckcast-whisper-stub-calls"));
   await page.click(".alt-input > summary");
   await page.setInputFiles("#audio-file", TONE);
   await page.waitForFunction(() => document.getElementById("audio-info").textContent.includes("deckcast-tone.wav"), null, { timeout: 5000 });
   check("uploaded audio is accepted and named", await page.locator("#audio-info").innerText().then((t) => t.includes("deckcast-tone.wav")));
   check("audio player appears for playback", await page.locator("#audio-player").isVisible());
-  check("upload note says playback only, not transcribed", await page.locator("#audio-info").innerText().then((t) => t.includes("playback only")));
+  check("upload hint says transcribed on this device", await page.locator(".alt-input .hint").innerText().then((t) => t.includes("transcribed on this device")));
+  await page.waitForFunction(() => document.getElementById("audio-info").textContent.includes("Transcription failed"), null, { timeout: 10000 });
+  check("first transcription failure is explained", await page.locator("#audio-info").innerText().then((t) => t.includes("Transcription failed")));
+  check("retry button appears after a failure", await page.locator("#audio-retry").isVisible());
+  await page.click("#audio-retry");
+  await page.waitForFunction(() => document.getElementById("transcript-view").textContent.includes("Photosynthesis is how plants make food"), null, { timeout: 10000 });
+  check("retry transcribes and saves the transcript", await page.locator("#transcript-view").innerText().then((t) => t.includes("Calvin cycle")));
+  check("transcribed words are counted", await page.locator("#transcript-words").innerText().then((t) => t.includes("words")));
+  check("transcription success is reported", await page.locator("#audio-info").innerText().then((t) => t.includes("Transcribed on this device")));
+  // Across a reload the stub stays good: a fresh upload succeeds at once.
+  await page.reload({ waitUntil: "load" });
+  await page.click(".alt-input > summary");
+  await page.setInputFiles("#audio-file", TONE);
+  await page.waitForFunction(() => document.getElementById("transcript-view").textContent.includes("Photosynthesis is how plants make food"), null, { timeout: 10000 });
+  check("upload after reload transcribes without failing", await page.locator("#audio-info").innerText().then((t) => t.includes("Transcribed on this device")));
 
   // ---- 9. Microphone: live path if the browser offers it, graceful fallback if not ----
   // Headless Chromium exposes SpeechRecognition but its audio service is
@@ -195,7 +313,10 @@ try {
     await page.click("#mic-start");
     await page.waitForFunction(() => document.getElementById("mic-status").textContent.length > 0, null, { timeout: 10000 });
     const micStatus = await page.locator("#mic-status").innerText();
-    check("mic start degrades gracefully in headless (explained, no crash)", micStatus.includes("problem") || micStatus.includes("Listening"), micStatus);
+    // Live path (Chrome/Edge): "problem" or "Listening". Whisper path (other
+    // browsers): "Transcribing", "Transcription failed", "Recording
+    // transcribed", or "no speech". Any of them is a graceful outcome.
+    check("mic start degrades gracefully in headless (explained, no crash)", micStatus.includes("problem") || micStatus.includes("Listening") || micStatus.includes("Transcrib") || micStatus.includes("no speech"), micStatus);
     if (await page.locator("#mic-stop").isEnabled()) await page.click("#mic-stop");
     await page.waitForTimeout(500);
     const micFinal = await page.locator("#mic-status").innerText();
@@ -249,6 +370,20 @@ try {
   check("sitemap lists the three pages", sitemap.status() === 200 && sitemapText.includes("/privacy.html") && sitemapText.includes("/terms.html"));
   const og = await page.request.get(`http://127.0.0.1:${PORT}/og-image.png`);
   check("social preview image serves as PNG", og.status() === 200 && (og.headers()["content-type"] || "").includes("image/png"));
+
+  // ---- 12b. Peer network files are published -----------------------------------------
+  const quizNet = await page.request.get(`http://127.0.0.1:${PORT}/quiz_generator.network.json`);
+  check("quiz network file serves as JSON", quizNet.status() === 200 && (await quizNet.json()).tools[0].name === "quiz_generator_front");
+  const quizHocon = await page.request.get(`http://127.0.0.1:${PORT}/quiz_generator.hocon`);
+  check("quiz hocon file serves", quizHocon.status() === 200 && (await quizHocon.text()).includes("quiz_generator"));
+  const deckNet = await page.request.get(`http://127.0.0.1:${PORT}/deckcast.network.json`);
+  check("deck network file serves and names the quiz peer", deckNet.status() === 200 && (await deckNet.text()).includes("https://ryannb01.github.io/DeckCast/quiz_generator"));
+  const manifestRes = await page.request.get(`http://127.0.0.1:${PORT}/agent-manifest.json`);
+  const manifestDoc = await manifestRes.json();
+  check("manifest serves and lists both networks", manifestRes.status() === 200 && manifestDoc.networks.map((n) => n.name).join(",") === "deckcast,quiz_generator");
+  check("manifest lists the set_outline action", manifestDoc.actions.agentTools.includes("set_outline"));
+  const wasmRes = await page.request.get(`http://127.0.0.1:${PORT}/vendor/onnx/ort-wasm-simd.wasm`);
+  check("ONNX wasm serves with the wasm MIME type", wasmRes.status() === 200 && (wasmRes.headers()["content-type"] || "").includes("application/wasm"));
 
   // ---- 13. Custom 404 -------------------------------------------------------------------------------
   await page.goto(`http://127.0.0.1:${PORT}/nope.html`, { waitUntil: "load" });
