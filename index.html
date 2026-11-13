@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="description" content="DeckCast turns a lecture into a slide deck. Paste or record a lecture, let the agents build and check the slides, then export a .pptx file. Everything runs in your browser.">
+    <meta property="og:title" content="DeckCast - Turn lectures into slide decks">
+    <meta property="og:description" content="Paste or record a lecture. Agents pull out the key points, build the slides, and check every claim against what was actually said. Then export a .pptx file.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://ryannb01.github.io/DeckCast/">
+    <meta property="og:image" content="https://ryannb01.github.io/DeckCast/og-image.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="DeckCast - Turn lectures into slide decks">
+    <meta name="twitter:description" content="Paste or record a lecture. Agents build the slides and check every claim. Export a .pptx file.">
+    <meta name="twitter:image" content="https://ryannb01.github.io/DeckCast/og-image.png">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' https:; font-src 'self'; object-src 'none'; base-uri 'self'; worker-src 'self' blob:; upgrade-insecure-requests">
+    <title>DeckCast - Turn lectures into slide decks</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="styles.css">
+    <script defer src="vendor/pptxgen.bundle.js"></script>
+    <script type="module" src="deck.js"></script>
+    <script type="module" src="site.js"></script>
+  </head>
+  <body id="top">
+    <header class="site-header">
+      <a class="brand" href="#top">DeckCast</a>
+      <button id="menu-button" class="menu-button" type="button" aria-expanded="false" aria-controls="site-nav">Menu</button>
+      <nav id="site-nav" class="site-nav" aria-label="Main navigation">
+        <a href="#lecture">Lecture</a>
+        <a href="#deck">Deck</a>
+        <a href="#assistant">Assistant</a>
+      </nav>
+    </header>
+    <main>
+      <section class="intro" aria-labelledby="welcome">
+        <h1 id="welcome">Turn a lecture into a slide deck.</h1>
+        <p class="lede">Paste or record a lecture. The agents pull out the key points, build the slides, and check every claim against what was actually said. Then export the deck as a .pptx file.</p>
+        <p class="demo-note">Everything runs in your browser. Your lecture text and your AI provider key never leave this page except to the provider you choose.</p>
+      </section>
+
+      <section id="lecture" class="panel" aria-labelledby="lecture-heading">
+        <h2 id="lecture-heading">1. Give it a lecture</h2>
+        <label for="lecture-title">Lecture title</label>
+        <input id="lecture-title" name="lecture-title" type="text" maxlength="120" autocomplete="off">
+        <p class="hint">Example: How Photosynthesis Works. Leave it blank and the first line of the transcript is used.</p>
+
+        <h3>Paste a transcript</h3>
+        <label for="transcript-input">Transcript text</label>
+        <textarea id="transcript-input" name="transcript-input" rows="8"></textarea>
+        <div class="button-row">
+          <button id="use-transcript" type="button">Use this transcript</button>
+          <button id="load-sample" type="button">Load the sample lecture</button>
+          <button id="clear-transcript" type="button" class="button-ghost">Clear</button>
+        </div>
+        <p id="transcript-status" class="status" role="status"></p>
+
+        <details class="alt-input">
+          <summary>Or record with the microphone, or upload audio</summary>
+          <h3>Record with the microphone</h3>
+          <p>Speak the lecture while the page listens. Your words are transcribed live and saved as the transcript. A recording of the audio is kept on the page so you can play it back.</p>
+          <div class="button-row">
+            <button id="mic-start" type="button">Start recording</button>
+            <button id="mic-stop" type="button" disabled>Stop recording</button>
+          </div>
+          <p id="mic-live" class="live-box" aria-live="polite">Your live transcription will appear here while you speak.</p>
+          <p id="mic-status" class="status" role="status"></p>
+
+          <h3>Upload an audio file</h3>
+          <label for="audio-file">Audio file (MP3, WAV, M4A, OGG or WebM, up to 50 MB)</label>
+          <input id="audio-file" name="audio-file" type="file" accept="audio/*">
+          <audio id="audio-player" controls hidden></audio>
+          <p id="audio-info" class="status" role="status"></p>
+          <p class="hint">Uploaded audio is stored for playback only in this version. It is not transcribed yet. To build a deck from it, paste a transcript or use the microphone.</p>
+        </details>
+      </section>
+
+      <section id="transcript" class="panel" aria-labelledby="transcript-heading">
+        <h2 id="transcript-heading">2. Check the transcript</h2>
+        <p id="transcript-words" class="meta"></p>
+        <div id="transcript-view" class="transcript-view">No transcript yet. Paste one above, record with the microphone, or load the sample lecture.</div>
+        <div class="button-row">
+          <button id="clear-view" type="button" class="button-ghost">Clear transcript</button>
+        </div>
+      </section>
+
+      <section id="deck" class="panel" aria-labelledby="deck-heading">
+        <h2 id="deck-heading">3. Build the deck</h2>
+        <p>Building is deterministic: every bullet comes from a sentence in the transcript, and each one keeps a link to its source sentence so the fact checker can verify it.</p>
+        <div class="button-row">
+          <button id="build-deck" type="button" class="button-primary">Build deck</button>
+          <button id="export-deck" type="button">Export as .pptx</button>
+        </div>
+        <p id="deck-status" class="status" role="status"></p>
+        <p id="export-status" class="status" role="status"></p>
+        <p id="slide-count" class="meta"></p>
+        <div id="slides-container" class="slides"></div>
+      </section>
+
+      <section id="assistant" class="panel assistant" aria-labelledby="assistant-heading">
+        <h2 id="assistant-heading">Ask DeckCast</h2>
+        <p>Ask for a deck, a summary, or a check of the slides. The agents work with the lecture and deck on this page.</p>
+        <p class="demo-note">Chat is sent to your selected AI provider. Add your own provider key in AI model settings below. Without a key, the assistant runs in demo mode and can still build decks from the page.</p>
+        <p id="assistant-status" role="status">Connecting the assistant...</p>
+        <div id="agent-app">
+          <div id="assistant-skeleton" class="assistant-skeleton" aria-hidden="true">
+            <div class="skeleton skeleton-title"></div>
+            <div class="skeleton skeleton-line" style="width: 85%"></div>
+            <div class="skeleton skeleton-line" style="width: 60%"></div>
+            <div class="skeleton skeleton-line" style="width: 75%"></div>
+          </div>
+          <div data-ns-slot="header"></div>
+          <div class="assistant-panels">
+            <div data-ns-slot="chat"></div>
+            <div data-ns-slot="agents"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <p>DeckCast 0.1. Built for the <a href="https://cognizant-agenticweb.devpost.com/">Open Agentic Web Challenge</a>. Agent network follows the <a href="https://github.com/cognizant-ai-labs/agentic-web">Open Agentic Web spec</a>.</p>
+      <p><a href="https://github.com/RyannB01/DeckCast">DeckCast on GitHub</a> &middot; <a href="privacy.html">Privacy</a> &middot; <a href="terms.html">Terms</a> &middot; <a href="#top">Back to top</a></p>
+      <p>&copy; 2026 Ryann Binoy</p>
+    </footer>
+  </body>
+</html>
