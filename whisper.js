@@ -1,14 +1,17 @@
 // whisper.js - on-device transcription of uploaded audio and microphone
 // recordings, using Whisper (tiny, quantized) running in the browser via
-// transformers.js. Everything is vendored under vendor/: the library, the
-// ONNX runtime wasm, and the model files. No audio, transcript or key ever
-// leaves the browser: remote model downloads are disabled, and the only
-// network requests are same-origin fetches of the vendored files.
+// transformers.js. The library and the ONNX runtime wasm are vendored under
+// vendor/, but the model itself comes from Hugging Face: the 30.7 MB decoder
+// is over every GitHub upload limit, so no model file can live in the repo.
+// No audio, transcript or key ever leaves the browser. The only request the
+// model download makes is a download from huggingface.co (large files are
+// served from its CDN): nothing is uploaded, and the transcription itself
+// runs on the device.
 //
 // Loading is lazy: nothing is fetched until the first transcription. The
-// model files total about 44 MB, so the first run downloads them from this
-// origin (and the browser cache keeps them for the next visit). Progress is
-// reported in two phases: per-file model download progress, then
+// model files total about 44 MB, so the first run downloads them from
+// Hugging Face (and the browser cache keeps them for the next visit).
+// Progress is reported in two phases: per-file model download progress, then
 // transcription progress (elapsed time against an estimate measured on a
 // real run: about 0.35x real time for whisper-tiny.en in headless Chromium,
 // reported conservatively at 0.5x so the estimate rarely overshoots).
@@ -53,12 +56,13 @@ async function ensurePipeline(onProgress) {
   if (pipelinePromise) return pipelinePromise;
   pipelinePromise = (async () => {
     const { env, pipeline } = await import("./vendor/transformers.min.js");
-    // Never fetch a model from Hugging Face or anywhere else: the vendored
-    // files are the only source. A model download would send no visitor
-    // data out, but there is no reason to allow it.
-    env.allowRemoteModels = false;
-    env.allowLocalModels = true;
-    env.localModelPath = baseUrl("vendor/models/");
+    // The model comes from the Hugging Face hub (Xenova/whisper-tiny.en):
+    // the 30.7 MB decoder cannot be pushed to the repo through any GitHub
+    // route, so no model file is vendored. Local models are off, so the
+    // library never reads a local model directory. The ONNX runtime wasm
+    // stays vendored under vendor/onnx/.
+    env.allowRemoteModels = true;
+    env.allowLocalModels = false;
     env.backends.onnx.wasm.wasmPaths = baseUrl("vendor/onnx/");
     env.backends.onnx.wasm.numThreads = 1;
     return pipeline("automatic-speech-recognition", WHISPER_MODEL, {
@@ -71,7 +75,7 @@ async function ensurePipeline(onProgress) {
           loaded: p.loaded || 0,
           total: p.total || 0,
           percent: p.total ? Math.round((100 * (p.loaded || 0)) / p.total) : 0,
-          message: `Loading the transcription model (${p.file}, ${p.total ? Math.round((100 * (p.loaded || 0)) / p.total) : 0}%)`,
+          message: `Downloading the transcription model from Hugging Face (${p.file}, ${p.total ? Math.round((100 * (p.loaded || 0)) / p.total) : 0}%)`,
         });
       },
     });
