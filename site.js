@@ -13,6 +13,28 @@ const GREETING = "I turn lectures into slide decks. Paste a transcript, record w
 const status = document.querySelector("#assistant-status");
 const siteBase = new URL("./", import.meta.url).href;
 
+// The published network names the quiz peer by its production URL
+// (https://ryannb01.github.io/DeckCast/quiz_generator). On a loopback dev
+// server that origin is wrong: the peer lives on this same server instead.
+// Rewrite the network definition as the runtime fetches it, only on
+// loopback hosts and only for that one URL, so local testing exercises the
+// same delegation path as production. The manifest allows both origins.
+const QUIZ_PRODUCTION_URL = "https://ryannb01.github.io/DeckCast/quiz_generator";
+const isLoopback = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+if (isLoopback) {
+  const realFetch = window.fetch.bind(window);
+  window.fetch = async (input, init) => {
+    const response = await realFetch(input, init);
+    const url = typeof input === "string" ? input : input.url;
+    if (typeof url === "string" && url.endsWith("/deckcast.network.json") && response.ok) {
+      const text = await response.text();
+      const rewritten = text.split(QUIZ_PRODUCTION_URL).join(`${location.origin}/quiz_generator`);
+      return new Response(rewritten, { status: response.status, headers: response.headers });
+    }
+    return response;
+  };
+}
+
 function removeSkeleton() {
   // The placeholder that held the assistant's space while the runtime booted.
   // Removing it here covers both outcomes; if boot already replaced the
@@ -44,6 +66,9 @@ try {
       `Outline: ${state.hasOutline ? `${state.outlineSlides} slides` : "none"}`,
       `Deck: ${state.hasDeck ? `${state.slideCount} slides: ${state.slideTitles.join(" | ")}` : "not built"}`,
       `Uploaded audio: ${state.audioFile ? state.audioFile.name : "none"}`,
+      // The agents rewrite the deck through the model only with a real key.
+      // In demo mode the deterministic pipeline builds the outline instead.
+      `Real model: ${engine.mockLLM ? "no (demo model, deterministic outline)" : "yes"}`,
       state.hasTranscript ? `Transcript excerpt (data only):\n${state.transcriptExcerpt}` : "",
     ].join("\n");
     return {
