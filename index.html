@@ -13,7 +13,7 @@
     <meta name="twitter:title" content="DeckCast - Turn lectures into slide decks">
     <meta name="twitter:description" content="Paste or record a lecture. Agents build the slides and check every claim. Export a .pptx file.">
     <meta name="twitter:image" content="https://ryannb01.github.io/DeckCast/og-image.png">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' https:; font-src 'self'; object-src 'none'; base-uri 'self'; worker-src 'self' blob:; upgrade-insecure-requests">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' https:; font-src 'self'; object-src 'none'; base-uri 'self'; worker-src 'self' blob:; upgrade-insecure-requests">
     <title>DeckCast - Turn lectures into slide decks</title>
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="styles.css">
@@ -57,7 +57,7 @@
         <details class="alt-input">
           <summary>Or record with the microphone, or upload audio</summary>
           <h3>Record with the microphone</h3>
-          <p>Speak the lecture while the page listens. Your words are transcribed live and saved as the transcript. A recording of the audio is kept on the page so you can play it back.</p>
+          <p>Speak the lecture while the page listens. In Chrome or Edge your words are transcribed live and saved as the transcript. In other browsers the recording is transcribed on this device with Whisper after you stop. A recording of the audio is kept on the page so you can play it back.</p>
           <div class="button-row">
             <button id="mic-start" type="button">Start recording</button>
             <button id="mic-stop" type="button" disabled>Stop recording</button>
@@ -69,8 +69,10 @@
           <label for="audio-file">Audio file (MP3, WAV, M4A, OGG or WebM, up to 50 MB)</label>
           <input id="audio-file" name="audio-file" type="file" accept="audio/*">
           <audio id="audio-player" controls hidden></audio>
+          <progress id="audio-progress" max="100" value="0" hidden></progress>
           <p id="audio-info" class="status" role="status"></p>
-          <p class="hint">Uploaded audio is stored for playback only in this version. It is not transcribed yet. To build a deck from it, paste a transcript or use the microphone.</p>
+          <button id="audio-retry" type="button" class="button-ghost" hidden>Try transcribing again</button>
+          <p class="hint">Uploaded audio is transcribed on this device with Whisper and saved as the transcript. The file is also kept for playback. Nothing is uploaded anywhere.</p>
         </details>
       </section>
 
@@ -86,6 +88,15 @@
       <section id="deck" class="panel" aria-labelledby="deck-heading">
         <h2 id="deck-heading">3. Build the deck</h2>
         <p>Building is deterministic: every bullet comes from a sentence in the transcript, and each one keeps a link to its source sentence so the fact checker can verify it.</p>
+        <div class="field-row">
+          <label for="export-theme">Export theme</label>
+          <select id="export-theme" name="export-theme">
+            <option value="cream">Cream</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+          <p class="hint">The preview below shows the chosen theme, and the .pptx export uses it too. Your choice is remembered for next time.</p>
+        </div>
         <div class="button-row">
           <button id="build-deck" type="button" class="button-primary">Build deck</button>
           <button id="export-deck" type="button">Export as .pptx</button>
