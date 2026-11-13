@@ -76,7 +76,7 @@ That runs the Node suite (`node tests/run-tests.mjs`) and the Playwright end-to-
 
 ## Hosting
 
-The site is static and assumes GitHub Pages project hosting at `https://ryannbinoy.github.io/DeckCast/`. That assumption is baked into the Open Graph URLs, the sitemap locations and the robots.txt Sitemap line. If hosting lands elsewhere, those URLs must change.
+The site is static and assumes GitHub Pages project hosting at `https://ryannb01.github.io/DeckCast/`. That assumption is baked into the Open Graph URLs, the sitemap locations and the robots.txt Sitemap line. If hosting lands elsewhere, those URLs must change.
 
 ## License
 
