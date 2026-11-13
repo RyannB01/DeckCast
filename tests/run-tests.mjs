@@ -39,6 +39,9 @@ import {
 } from "../whisper.js";
 import { pptxSlideXml } from "./pptx-zip.mjs";
 import { stubModelOutline } from "./stub-model.mjs";
+import { LlmClient, retryAfterMs, LLM_429_MAX_RETRIES } from "../runtime/llm.js";
+import { agentLink, setAgentEngine, setModelVerified, setModelError, resetAgentLink, hasRealModel } from "../agent-link.js";
+import { registerActions } from "../deckcast-actions.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -240,6 +243,89 @@ check("model deck passes the fact checker", modelVerdict.ok === true, JSON.strin
 check("model deck fact check examined its bullets", modelVerdict.checked >= 20, `checked ${modelVerdict.checked}`);
 clearTranscript();
 
+// ---- 1g. Build deck routing: model path, deterministic fallback, loud failure ----
+// The Build deck button used to call the deterministic pipeline directly, so
+// a configured key did nothing and a failed model call was invisible: the
+// page showed the deterministic deck with nothing saying the model failed.
+// buildDeck() routes through the agent network when a real key is configured,
+// and falls back to the deterministic deck with a plain note when the model
+// call fails or writes nothing. The link is stubbed here: no API key, no
+// network, no browser. (deck.js state functions are imported in section 8;
+// ES imports hoist, so they are available here.)
+check("hasRealModel is false with no engine", resetAgentLink() === undefined && hasRealModel() === false);
+setAgentEngine({ mockLLM: true, byokKey: "gsk_stub_key" });
+check("hasRealModel is false for the demo model", hasRealModel() === false);
+setAgentEngine({ mockLLM: false, byokKey: "" });
+check("hasRealModel is false with no key", hasRealModel() === false);
+setAgentEngine({ mockLLM: false, byokKey: "demo" });
+check("hasRealModel is false for the demo placeholder key", hasRealModel() === false);
+setAgentEngine({ mockLLM: false, byokKey: "gsk_stub_key" });
+check("hasRealModel is true for a real key on a real router", hasRealModel() === true);
+resetAgentLink();
+check("build path says the assistant is still connecting with no engine", buildPathText().includes("still connecting"));
+setAgentEngine({ mockLLM: true, byokKey: "demo" });
+check("build path says deterministic with no key", buildPathText().includes("No AI provider key is set") && buildPathText().includes("deterministically"));
+setAgentEngine({ mockLLM: false, byokKey: "gsk_stub_key" });
+check("build path says the key is not verified yet", buildPathText().includes("not verified yet"));
+setModelVerified("openai/gpt-oss-120b");
+check("build path says the model is verified after a success", buildPathText().includes("Model verified (openai/gpt-oss-120b)"));
+setModelError("LLM HTTP 429: Rate limit reached");
+check("build path reports the last model failure", buildPathText().includes("last model call failed") && buildPathText().includes("429"));
+resetAgentLink();
+// The outline records which path wrote it, so the button can tell a model
+// deck from a deterministic one instead of guessing.
+setTranscript(turing, "paste");
+check("a new transcript has no outline source yet", deckApp.outlineSource === null);
+pageBuildOutline();
+check("the deterministic pipeline marks its outline", deckApp.outlineSource === "deterministic");
+setOutline(stubModelOutline(turing, "Turing Machines - Introduction"));
+check("set_outline marks the outline as model-written", deckApp.outlineSource === "model");
+setTranscript(turing, "paste");
+check("a new transcript clears the outline source", deckApp.outlineSource === null);
+clearTranscript();
+check("clearing the transcript clears the outline source", deckApp.outlineSource === null);
+// With no engine, Build deck builds deterministically and says so.
+setTranscript(turing, "paste");
+resetAgentLink();
+const noEngineDeck = await buildDeck();
+check("buildDeck with no engine builds the deterministic deck", noEngineDeck.ok === true && noEngineDeck.path === "deterministic" && noEngineDeck.slideCount === 7, JSON.stringify(noEngineDeck));
+const noEngineText = deckApp.slides.flatMap((s) => [s.title, ...(s.bullets || []).map((b) => b.text)]).join(" ");
+check("the no-engine deck is the deterministic one", noEngineText.includes("quite powerful than"));
+// With a stubbed real model, the button produces the model-rewritten deck
+// through set_outline.
+setAgentEngine({ mockLLM: false, byokKey: "gsk_stub_key", runTurn: async () => { setOutline(stubModelOutline(turing, "Turing Machines - Introduction")); } });
+const modelDeck = await buildDeck();
+check("buildDeck with a real model rewrites through the model", modelDeck.ok === true && modelDeck.path === "model" && modelDeck.message.includes("rewritten with the model"), JSON.stringify(modelDeck));
+check("the model deck is marked model-written", deckApp.outlineSource === "model");
+const modelDeckText = deckApp.slides.flatMap((s) => [s.title, ...(s.bullets || []).map((b) => b.text)]).join(" ");
+check("the button model deck has the rewritten bullets", modelDeckText.includes("is defined by a 7-tuple") && !/charge symbol/i.test(modelDeckText));
+// With a failing stubbed model, the button falls back loudly: the failure
+// and the reason are on the page, and the deterministic deck is never
+// presented as the model's work.
+setAgentEngine({ mockLLM: false, byokKey: "gsk_stub_key", runTurn: async () => { throw new Error("LLM HTTP 429: Rate limit reached for model openai/gpt-oss-120b. Please try again in 30.105s."); } });
+const failedDeck = await buildDeck();
+check("buildDeck with a failing model falls back to the deterministic deck", failedDeck.ok === true && failedDeck.path === "deterministic", JSON.stringify(failedDeck));
+check("the fallback names the failure and the reason", failedDeck.message.includes("The model call failed") && failedDeck.message.includes("429") && failedDeck.message.includes("deterministic deck is shown instead"), failedDeck.message);
+check("the failure is recorded on the link", agentLink.modelError.includes("429"));
+check("the build path reports the failure afterwards", buildPathText().includes("last model call failed"));
+const failedDeckText = deckApp.slides.flatMap((s) => [s.title, ...(s.bullets || []).map((b) => b.text)]).join(" ");
+check("the fallback deck is the deterministic one", failedDeckText.includes("quite powerful than"));
+// A model turn that finishes without writing an outline also falls back
+// with a plain note, instead of silently serving the deterministic deck.
+setAgentEngine({ mockLLM: false, byokKey: "gsk_stub_key", runTurn: async () => {} });
+const emptyDeck = await buildDeck();
+check("buildDeck with an empty model turn falls back with a note", emptyDeck.ok === true && emptyDeck.path === "deterministic" && emptyDeck.message.includes("did not rewrite"), emptyDeck.message);
+// No transcript, no deck, whichever path would run.
+clearTranscript();
+resetAgentLink();
+const noTranscriptDeck = await buildDeck();
+check("buildDeck with no transcript refuses", noTranscriptDeck.ok === false && noTranscriptDeck.reason.includes("no transcript"), JSON.stringify(noTranscriptDeck));
+// The status-line updater is a no-op without a DOM (Node has none).
+updateBuildPathStatus();
+check("updateBuildPathStatus does not throw without a DOM", true);
+resetAgentLink();
+clearTranscript();
+
 // ---- 2. .pptx export ---------------------------------------------------------
 // The vendored bundle is a browser classic script: it declares a top-level
 // `var PptxGenJS`, so require() does not expose the class. Load it in a vm
@@ -316,7 +402,7 @@ const readmeText = readFileSync(path.join(ROOT, "README.md"), "utf8");
 check("README keeps the BYOK section verbatim", BYOK_MARKERS.every((m) => readmeText.includes(m)));
 check("README has exactly two em dashes, both in the BYOK section", (readmeText.match(/\u2014/g) || []).length === 2);
 const readmeWithoutByok = readmeText.replace(/## Bring your own key[\s\S]*?(?=\n## Privacy)/, "");
-const visibleFiles = ["index.html", "deck.js", "site.js", "deckcast-actions.js", "404.html", "README.md"];
+const visibleFiles = ["index.html", "deck.js", "site.js", "deckcast-actions.js", "agent-link.js", "404.html", "README.md"];
 for (const f of visibleFiles) {
   if (!existsSync(path.join(ROOT, f))) { check(`${f} exists`, false); continue; }
   const text = f === "README.md" ? readmeWithoutByok : readFileSync(path.join(ROOT, f), "utf8");
@@ -325,7 +411,7 @@ for (const f of visibleFiles) {
 
 // ---- 5. No secrets ------------------------------------------------------------
 const secretPatterns = [/sk-[A-Za-z0-9]{10,}/, /api[_-]?key\s*[:=]\s*['"][^'"]{8,}['"]/i, /-----BEGIN [A-Z ]*PRIVATE KEY-----/];
-const codeFiles = ["index.html", "deck.js", "deckcast-core.js", "deckcast-actions.js", "site.js", "deckcast.network.json", "deckcast.hocon", "quiz_generator.network.json", "quiz_generator.hocon", "whisper.js", "agent-manifest.json", "styles.css", "sample-lecture.txt"];
+const codeFiles = ["index.html", "deck.js", "deckcast-core.js", "deckcast-actions.js", "agent-link.js", "site.js", "deckcast.network.json", "deckcast.hocon", "quiz_generator.network.json", "quiz_generator.hocon", "whisper.js", "agent-manifest.json", "styles.css", "sample-lecture.txt"];
 for (const f of codeFiles) {
   const text = readFileSync(path.join(ROOT, f), "utf8");
   check(`no secret material in ${f}`, !secretPatterns.some((re) => re.test(text)));
@@ -424,6 +510,9 @@ import {
   clearTranscript,
   exportDeck,
   getLectureState,
+  buildDeck,
+  buildPathText,
+  updateBuildPathStatus,
 } from "../deck.js";
 check("setTranscript rejects empty text", setTranscript("   ", "paste").ok === false);
 const set = setTranscript(sample, "paste");
@@ -617,10 +706,117 @@ check("structure instructions state the correct 7-tuple", network.tools.find((t)
 check("structure instructions keep the stack out of Sigma", network.tools.find((t) => t.name === "structure").instructions.includes("has no stack") && network.tools.find((t) => t.name === "structure").instructions.includes("does not belong to Sigma"));
 check("structure instructions restate the summary, never copy", network.tools.find((t) => t.name === "structure").instructions.includes("never copies a bullet or a transcript sentence"));
 check("slide_designer instructions return outline JSON", network.tools.find((t) => t.name === "slide_designer").instructions.includes("website_set_outline"));
-check("slide_designer instructions polish bullets and check the facts", network.tools.find((t) => t.name === "slide_designer").instructions.includes("Polish every bullet into one complete sentence") && network.tools.find((t) => t.name === "slide_designer").instructions.includes("pure ASR noise"));
+check("slide_designer instructions polish bullets and check the facts", network.tools.find((t) => t.name === "slide_designer").instructions.includes("one complete sentence with a subject and a verb") && network.tools.find((t) => t.name === "slide_designer").instructions.includes("pure ASR noise") && network.tools.find((t) => t.name === "slide_designer").instructions.includes("Keep the facts structure established"));
 check("grounding rules never touch an API key", network.commondefs.replacement_strings.grounding_rules.includes("Never ask for, log, or store an API key"));
 check("set_outline description demands complete sentences", actionsSrc.includes("one complete sentence in correct grammar"));
 check("hocon and network agree on the rewrite rules", readFileSync(path.join(ROOT, "deckcast.hocon"), "utf8").includes("7-tuple is (Q, Sigma, Gamma, delta, q0, blank, F)") && readFileSync(path.join(ROOT, "deckcast.hocon"), "utf8").includes("never copies a bullet or a transcript sentence"));
+
+// ---- 12b. Provider 429 retry: wait out the full suggested window ----------
+// Groq answers 429 with a Retry-After header AND a "try again in Xs" phrase
+// in the body, and the two can disagree. The retry must wait the LONGEST
+// suggestion: waiting only a short header while the body asks for 30s earns
+// another 429, because the tokens that tripped the limit are still inside
+// the provider's rolling window. Stubbed fetch only: no API key, no network.
+function fakeHeaders(entries = {}) {
+  const map = new Map(Object.entries(entries));
+  return { get: (name) => map.get(name) ?? null };
+}
+check("retry waits the longer of header and body", retryAfterMs({ headers: fakeHeaders({ "Retry-After": "1" }) }, "Rate limit reached. Please try again in 30.105s.") === 30105);
+check("retry waits the header when it is longer", retryAfterMs({ headers: fakeHeaders({ "Retry-After": "45" }) }, "Please try again in 2s.") === 45000);
+check("retry reads the body phrase alone", retryAfterMs({ headers: fakeHeaders({}) }, "Rate limit reached for model openai/gpt-oss-120b. Please try again in 30.105s.") === 30105);
+check("retry defaults to 5s with no suggestion", retryAfterMs({ headers: fakeHeaders({}) }, "Rate limit reached.") === 5000);
+check("retry caps a huge suggestion at 60s", retryAfterMs({ headers: fakeHeaders({}) }, "Please try again in 600s.") === 60000);
+check("retry honours an HTTP-date Retry-After", retryAfterMs({ headers: fakeHeaders({ "Retry-After": new Date(Date.now() + 10000).toUTCString() }) }, "") >= 9000 && retryAfterMs({ headers: fakeHeaders({ "Retry-After": new Date(Date.now() + 10000).toUTCString() }) }, "") <= 11000);
+check("at most two retries per call", LLM_429_MAX_RETRIES === 2);
+const sseOk = (model, text) => `data: ${JSON.stringify({ model, choices: [{ delta: { content: text }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n`;
+const traceStub = { start: () => "span", update: () => {}, end: () => {}, fail: () => {} };
+const realFetch = globalThis.fetch;
+try {
+  // 429, then success: the call succeeds and fetch ran twice.
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    if (fetchCalls === 1) return new Response("Rate limit reached. Please try again in 0.05s.", { status: 429 });
+    return new Response(sseOk("openai/gpt-oss-120b", "Hello from the model"), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  };
+  const retryClient = new LlmClient({ baseUrl: "https://api.groq.com/openai/v1", apiKey: "gsk_stub_key", trace: traceStub, mock: false });
+  const retried = await retryClient.chat({ model: "openai/gpt-oss-120b", messages: [{ role: "user", content: "hi" }], tools: [] });
+  check("a 429 is retried and then succeeds", retried.content === "Hello from the model" && retried.model === "openai/gpt-oss-120b" && fetchCalls === 2, `fetch ran ${fetchCalls} times`);
+  // A short header must not cut a longer body delay short: the elapsed time
+  // is the body's 0.2s, not the header's 0s.
+  fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    if (fetchCalls === 1) return new Response("Please try again in 0.2s.", { status: 429, headers: { "Retry-After": "0" } });
+    return new Response(sseOk("openai/gpt-oss-120b", "second try"), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  };
+  const waitedFrom = Date.now();
+  const retriedSlow = await retryClient.chat({ model: "openai/gpt-oss-120b", messages: [{ role: "user", content: "hi" }], tools: [] });
+  const waitedMs = Date.now() - waitedFrom;
+  check("the retry waits the body's longer delay, not the short header", retriedSlow.content === "second try" && waitedMs >= 150, `waited ${waitedMs}ms`);
+  // 429s exhausted: three attempts, then the 429 error surfaces.
+  fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return new Response("Rate limit reached. Please try again in 0.01s.", { status: 429 });
+  };
+  let exhausted = null;
+  try { await retryClient.chat({ model: "openai/gpt-oss-120b", messages: [{ role: "user", content: "hi" }], tools: [] }); } catch (err) { exhausted = err; }
+  check("a 429 that never clears fails after three attempts", exhausted !== null && /LLM HTTP 429/.test(exhausted.message) && fetchCalls === 3, `fetch ran ${fetchCalls} times`);
+  // A 500 is not a rate limit: it fails at once, with no retry.
+  fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return new Response("Internal error.", { status: 500 });
+  };
+  let failed500 = null;
+  try { await retryClient.chat({ model: "openai/gpt-oss-120b", messages: [{ role: "user", content: "hi" }], tools: [] }); } catch (err) { failed500 = err; }
+  check("a 500 fails at once without retrying", failed500 !== null && /LLM HTTP 500/.test(failed500.message) && fetchCalls === 1, `fetch ran ${fetchCalls} times`);
+} finally {
+  globalThis.fetch = realFetch;
+}
+
+// ---- 12c. Token trims: the turn must fit the free tier's budget ----------
+// Measured live in headless Chromium with a stubbed provider (see the
+// harness notes in TESTING.md): the full Turing turn was 13 calls totalling
+// ~81,300 tokens before the trims and ~59,100 after, with the first two
+// calls falling from ~4,200 + ~4,800 to ~2,400 + ~2,900. The trims below
+// are what did it: no render_cruse tool, a compressed grounding block, the
+// transcript excerpt out of every agent's instructions, and a shorter
+// set_outline description. The turn still exceeds the 8,000 TPM free-tier
+// budget on its own (the producer re-sends its history on all seven of its
+// calls), so these assertions pin the sizes, not a fit that is not there.
+const repl = network.commondefs.replacement_strings;
+function expandInstructions(text) {
+  let out = String(text);
+  for (const [k, v] of Object.entries(repl)) out = out.split(`{${k}}`).join(v);
+  return out;
+}
+check("the network has no cruse tool any more", !("cruse" in network) && !JSON.stringify(network).includes("render_cruse"));
+check("the producer no longer references cruse", !network.tools.find((t) => t.name === "deckcast_producer").instructions.includes("cruse"));
+const expandedProducer = expandInstructions(network.tools.find((t) => t.name === "deckcast_producer").instructions);
+check("expanded producer instructions fell below 4,000 chars", expandedProducer.length < 4000, `${expandedProducer.length} chars (was 5,220)`);
+const expandedStructure = expandInstructions(network.tools.find((t) => t.name === "structure").instructions);
+check("expanded structure instructions fell below 4,500 chars", expandedStructure.length < 4500, `${expandedStructure.length} chars (was 4,749)`);
+const expandedDesigner = expandInstructions(network.tools.find((t) => t.name === "slide_designer").instructions);
+check("expanded slide_designer instructions fell below 3,200 chars", expandedDesigner.length < 3200, `${expandedDesigner.length} chars (was 3,644)`);
+const expandedChecker = expandInstructions(network.tools.find((t) => t.name === "fact_checker").instructions);
+check("expanded fact_checker instructions fell below 2,400 chars", expandedChecker.length < 2400, `${expandedChecker.length} chars (was 2,502)`);
+check("grounding rules still never touch an API key", repl.grounding_rules.includes("Never ask for, log, or store an API key"));
+check("grounding rules were compressed", repl.grounding_rules.length < 1400, `${repl.grounding_rules.length} chars (was 1,518)`);
+// The transcript excerpt travels in the get_lecture_state tool result when
+// an agent asks for it (1,200 chars), never in the instructions: site.js no
+// longer appends it to any agent.
+setTranscript(turing, "paste");
+check("the lecture-state tool result still carries the excerpt", getLectureState().transcriptExcerpt.length > 0 && getLectureState().transcriptExcerpt.length <= 1200, `${getLectureState().transcriptExcerpt.length} chars`);
+const siteJs = readFileSync(path.join(ROOT, "site.js"), "utf8");
+check("site.js appends no transcript excerpt to any agent", !siteJs.includes("Transcript excerpt (data only)") && siteJs.includes("website_get_lecture_state"));
+clearTranscript();
+// The set_outline tool description is part of every call's tool block.
+const actionDefs = [];
+registerActions({ register: (d) => actionDefs.push(d) }, { setTranscript, buildOutline: pageBuildOutline, setOutline, renderSlides: pageRenderSlides, verifyDeckAction, exportDeck, getLectureState });
+const setOutlineDef = actionDefs.find((d) => d.name === "set_outline");
+check("set_outline description is short and still demands complete sentences", setOutlineDef.description.length < 500 && setOutlineDef.description.includes("one complete sentence in correct grammar"), `${setOutlineDef.description.length} chars`);
 
 // ---- 13. Export themes -----------------------------------------------------------
 // Three .pptx themes, independent of the site palette: cream (the site

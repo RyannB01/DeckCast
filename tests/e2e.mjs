@@ -305,6 +305,59 @@ export async function pipeline(task, model, options) {
   check("Turing summary copies no content bullet", turingDeck.summaryBullets.every((b) => !turingDeck.contentBullets.includes(b)));
   check("Turing summary is labelled with each idea title", ["The hierarchy", "The tape and its alphabet", "Tape operations", "Control and halting", "Formal definition"].every((t) => turingDeck.summaryBullets.some((b) => b.startsWith(t))));
 
+  // ---- 6d. Build deck routing: the button uses the model when one is set ----
+  // In demo mode (no key) the Build deck area says so plainly and the button
+  // builds deterministically. With a stubbed real model injected through the
+  // agent link, the same button routes through the agent network and the
+  // deck arrives rewritten via set_outline. With a failing stubbed model,
+  // the button falls back to the deterministic deck and says the model
+  // failed, with the reason, instead of silently serving the deterministic
+  // deck as the model's work. No API key and no network anywhere here: the
+  // engines below are stubs that call the page's own setOutline.
+  const buildPath = () => page.evaluate(() => document.getElementById("build-path")?.textContent || "");
+  const deckStatus = () => page.evaluate(() => document.getElementById("deck-status")?.textContent || "");
+  const slideText = () => page.evaluate(() => document.getElementById("slides-container").innerText);
+  check("build path says deterministic in demo mode", (await buildPath()).includes("No AI provider key is set") && (await buildPath()).includes("deterministically"));
+  await page.evaluate(async (turingText) => {
+    const { setAgentEngine } = await import("/agent-link.js");
+    const deck = await import("/deck.js");
+    const { stubModelOutline } = await import("/tests/stub-model.mjs");
+    setAgentEngine({
+      mockLLM: false,
+      byokKey: "stub-key-for-tests",
+      runTurn: async () => { deck.setOutline(stubModelOutline(turingText, "Turing Machines - Introduction")); },
+    });
+    deck.updateBuildPathStatus();
+  }, turing);
+  check("build path says the key is not verified yet with a real model", (await buildPath()).includes("not verified yet"));
+  await page.click("#build-deck");
+  await page.waitForFunction(() => document.getElementById("deck-status")?.textContent.includes("rewritten with the model"), null, { timeout: 10000 });
+  check("button with a real model rewrites the deck", (await deckStatus()).includes("rewritten with the model"));
+  check("button model deck has the rewritten bullets", (await slideText()).includes("is defined by a 7-tuple") && !(await slideText()).includes("Charge symbol"));
+  await page.evaluate(async () => {
+    const { setAgentEngine } = await import("/agent-link.js");
+    setAgentEngine({
+      mockLLM: false,
+      byokKey: "stub-key-for-tests",
+      runTurn: async () => { throw new Error("LLM HTTP 429: Rate limit reached for model openai/gpt-oss-120b. Please try again in 30.105s."); },
+    });
+  });
+  await page.click("#build-deck");
+  await page.waitForFunction(() => document.getElementById("deck-status")?.textContent.includes("The model call failed"), null, { timeout: 10000 });
+  check("button with a failing model falls back loudly", (await deckStatus()).includes("The model call failed") && (await deckStatus()).includes("deterministic deck is shown instead") && (await deckStatus()).includes("429"));
+  check("fallback deck is the deterministic one", (await slideText()).includes("quite powerful than"));
+  check("build path reports the failure afterwards", (await buildPath()).includes("last model call failed"));
+  // A model_call trace event with a real response verifies the key and
+  // resolves the "awaiting verification" state, the same way a real call
+  // would. (Section 7 reloads the page right after this, so the badge the
+  // event also flips is back to MOCK before section 10 checks it.)
+  await page.evaluate(() => {
+    const trace = window.__nsweb.trace;
+    const span = trace.start("model_call", { model: "openai/gpt-oss-120b", mock: false });
+    trace.end(span, { respModel: "openai/gpt-oss-120b", mock: false, verifiedReal: true });
+  });
+  check("a successful model call verifies the key in the build path", (await buildPath()).includes("Model verified (openai/gpt-oss-120b)"));
+
   // ---- 7. Load the sample lecture ----------------------------------------------------
   await page.reload({ waitUntil: "load" });
   await page.click("#load-sample");
