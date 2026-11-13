@@ -6,7 +6,7 @@
 // "irreversible" waits for the visitor to confirm. DeckCast has no irreversible
 // actions: building, checking and exporting never destroy anything.
 
-import { app, getLectureState, setTranscript, buildOutline, renderSlides, verifyDeckAction, exportDeck } from "./deck.js";
+import { app, getLectureState, setTranscript, setOutline, buildOutline, renderSlides, verifyDeckAction, exportDeck } from "./deck.js";
 
 // The generated runtime loads this module via agent-manifest.json.
 export function registerActions(actions) {
@@ -39,6 +39,36 @@ export function registerActions(actions) {
       if (!result.ok) return result;
       return { ok: true, title: app.outline.title, slides: app.outline.slides };
     },
+  });
+  actions.register({
+    name: "set_outline",
+    description: "Store a model-written outline on the page: title slide, content slides with one idea each, and a summary slide. Use it after rewriting the lecture into short bullets in your own words: a real title naming each idea, 2 to 4 short bullets per content slide, transcript detail in the speaker notes. Never copy transcript sentences verbatim, never put a timestamp or a filler word on a slide. Every bullet is checked against the transcript afterwards, so write only what the lecture says.",
+    effect: "write",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["title", "slides"],
+      properties: {
+        title: { type: "string", minLength: 1, maxLength: 80, description: "The deck title." },
+        slides: {
+          type: "array", minItems: 2, maxItems: 12, description: "The slides: a title slide, one content slide per idea, and a summary slide.",
+          items: {
+            type: "object", additionalProperties: false, required: ["type", "title"],
+            properties: {
+              type: { type: "string", enum: ["title", "content", "summary", "diagram"], description: "Slide kind." },
+              title: { type: "string", minLength: 1, maxLength: 80, description: "A real title naming the idea, never a sentence fragment." },
+              bullets: {
+                type: "array", maxItems: 5, description: "Short bullets in your own words, 0 to 5 per slide.",
+                items: {
+                  type: "object", additionalProperties: false, required: ["text"],
+                  properties: { text: { type: "string", minLength: 1, maxLength: 200, description: "One short bullet, in the lecturer's meaning but not their verbatim words." } },
+                },
+              },
+              notes: { type: "string", maxLength: 1000, description: "Speaker notes: the transcript detail for this idea." },
+            },
+          },
+        },
+      },
+    },
+    execute: ({ title, slides }) => setOutline({ title, slides }),
   });
   actions.register({
     name: "render_slides",
