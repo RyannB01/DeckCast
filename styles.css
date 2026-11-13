@@ -1,12 +1,16 @@
 /* DeckCast styles.
-   Palette: brown and cream + baby blue. The baby blue call-to-action button is
-   the only saturated colour on the page; everything else is warm neutrals.
+   Palette: brown and cream + baby blue. The page is visibly cream, the slide
+   cards are a lighter cream, and the baby blue shows in the header rule, the
+   top rule on every slide card, the brand mark, the primary button, the slide
+   numbers and the progress bar. Cream is still the dominant field; the blue
+   is the accent (squint test: the button and the rules are what stand out).
    Colours are defined in OKLCH (hex first as the reference and fallback).
-   Contrast, checked: ink on cream 15.1:1, muted on cream 6.3:1, ink on baby
-   blue 9.1:1, ink on soft tint 14.3:1, muted on soft tint 5.9:1. Input borders
-   use a stronger warm brown (4.1:1 against white) so the field boundary is
-   visible; the primary button carries a darker blue border (4.2:1 against
-   cream) for the same reason. */
+   Contrast, checked: ink on paper 13.6:1, muted on paper 5.6:1, ink on card
+   15.1:1, muted on card 6.3:1, ink on baby blue 9.1:1, ink on soft tint
+   14.3:1, muted on soft tint 5.9:1. Muted text never sits on baby blue
+   (3.7:1, below AA). Input borders use a stronger warm brown (3.8:1 against
+   the card) so the field boundary is visible; the primary button carries a
+   darker blue border (3.7:1 against paper) for the same reason. */
 
 /* IBM Plex Sans, self-hosted (fonts/ibm-plex-sans-latin-wght-normal.woff2).
    No webfont is ever fetched from a third party: this file is served from the
@@ -22,10 +26,10 @@
 }
 
 :root {
-  --paper: #faf6ef;
-  --paper: oklch(97.4% 0.01 82);
-  --card: #ffffff;
-  --card: oklch(100% 0 0);
+  --paper: #f3e9d7;
+  --paper: oklch(93.7% 0.026 82);
+  --card: #faf6ef;
+  --card: oklch(97.4% 0.01 82);
   --ink: #2b1d12;
   --ink: oklch(24.5% 0.029 59);
   --muted: #6b5847;
@@ -82,7 +86,8 @@ a:hover { text-decoration-thickness: 2px; }
 
 :focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
 
-/* Header and navigation */
+/* Header and navigation: a baby blue rule under the header, and a blue
+   mark next to the brand, so the blue is visible before any button. */
 .site-header {
   display: flex;
   align-items: center;
@@ -94,6 +99,7 @@ a:hover { text-decoration-thickness: 2px; }
   padding-top: max(16px, env(safe-area-inset-top, 0));
   padding-left: max(24px, env(safe-area-inset-left, 0));
   padding-right: max(24px, env(safe-area-inset-right, 0));
+  border-bottom: 3px solid var(--accent);
 }
 
 .brand {
@@ -106,6 +112,17 @@ a:hover { text-decoration-thickness: 2px; }
   min-height: 44px;
   display: inline-flex;
   align-items: center;
+}
+/* Blue mark next to the brand: the palette's accent, in the header. */
+.brand::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  border: 1px solid var(--accent-border);
+  border-radius: 3px;
+  margin-right: 8px;
+  flex: none;
 }
 .brand:hover { color: var(--ink); text-decoration: underline; }
 
@@ -148,7 +165,7 @@ main {
 .demo-note {
   font-size: 14px;
   color: var(--muted);
-  border-left: 3px solid var(--border);
+  border-left: 3px solid var(--accent);
   padding-left: 12px;
   max-width: 65ch;
 }
@@ -207,7 +224,7 @@ select {
   border-radius: var(--radius);
   font: inherit;
   color: var(--ink);
-  background: #fff;
+  background: var(--card);
   min-height: 44px;
 }
 
@@ -307,16 +324,54 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }
+.field-row select { max-width: 320px; }
+
+/* The slide preview shows the chosen export theme, so what the visitor sees
+   is what the .pptx will look like. The site itself stays cream and blue;
+   only the preview cards follow the export theme. Cream is the default.
+   The slide number uses dark ink on the accent in every theme: dark ink on
+   baby blue is 9.1:1, on the steel blue 6.9:1; light cream text on baby blue
+   would be below AA, so it is never used there. */
+#slides-container {
+  --slide-bg: #faf6ef;
+  --slide-title-bg: #f3e9d7;
+  --slide-ink: #2b1d12;
+  --slide-muted: #6b5847;
+  --slide-accent: #8ec8ee;
+  --slide-on-accent: #2b1d12;
+  --slide-border: #e3d9cb;
+}
+#slides-container[data-export-theme="light"] {
+  --slide-bg: #ffffff;
+  --slide-title-bg: #ffffff;
+  --slide-ink: #2b1d12;
+  --slide-muted: #6b5847;
+  --slide-accent: #6b9cc4;
+  --slide-on-accent: #2b1d12;
+  --slide-border: #d8d2c8;
+}
+#slides-container[data-export-theme="dark"] {
+  --slide-bg: #2e241a;
+  --slide-title-bg: #221a12;
+  --slide-ink: #faf6ef;
+  --slide-muted: #c9bba6;
+  --slide-accent: #8ec8ee;
+  --slide-on-accent: #2b1d12;
+  --slide-border: #4a3d2e;
+}
+
 .slide-card {
-  border: 1px solid var(--border);
+  border: 1px solid var(--slide-border);
+  border-top: 4px solid var(--slide-accent);
   border-radius: var(--radius);
   padding: 16px;
-  background: #fff;
+  background: var(--slide-bg);
+  color: var(--slide-ink);
   display: flex;
   flex-direction: column;
   animation: slide-in 240ms ease-out both;
 }
-.slide-card.slide-title { background: var(--tint); justify-content: center; }
+.slide-card.slide-title { background: var(--slide-title-bg); justify-content: center; }
 
 .slide-head { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px; }
 .slide-number {
@@ -324,8 +379,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: var(--accent);
-  color: var(--ink);
+  background: var(--slide-accent);
+  color: var(--slide-on-accent);
   font-size: 14px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -336,7 +391,25 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .slide-head h3 { margin: 0; font-size: 17px; }
 .slide-card ul { margin: 0; padding-left: 20px; }
 .slide-card li { margin-bottom: 8px; }
-.slide-notes { font-size: 13px; color: var(--muted); margin: 12px 0 0; }
+.slide-notes { font-size: 13px; color: var(--slide-muted); margin: 12px 0 0; }
+
+/* Diagram slides: the SVG scales to the card width and keeps its ratio. */
+.diagram-wrap { margin-top: 4px; }
+.diagram-wrap svg { display: block; width: 100%; height: auto; border-radius: var(--radius); }
+
+/* Transcription progress: a thin bar in the accent colour. */
+progress {
+  width: 100%;
+  height: 8px;
+  margin: 8px 0 4px;
+  appearance: none;
+  border: none;
+  border-radius: 4px;
+  background: var(--border);
+}
+progress::-webkit-progress-bar { background: var(--border); border-radius: 4px; }
+progress::-webkit-progress-value { background: var(--accent); border-radius: 4px; }
+progress::-moz-progress-bar { background: var(--accent); border-radius: 4px; }
 
 /* Assistant */
 .assistant-panels { display: block; }
@@ -351,7 +424,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   --ns-font: "IBM Plex Sans", system-ui, sans-serif;
   --ns-primary: #8ec8ee;
   --ns-primary: oklch(80.7% 0.081 238);
-  --ns-bg: #ffffff;
+  --ns-bg: var(--card);
   --ns-bg: oklch(100% 0 0);
   --ns-fg: #2b1d12;
   --ns-fg: oklch(24.5% 0.029 59);
