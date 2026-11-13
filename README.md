@@ -43,9 +43,9 @@ How to tell it worked: after you paste a key, the assistant panel shows an **LLM
 ## Privacy
 
 - **Fonts are self-hosted.** The only webfont is IBM Plex Sans, served from `fonts/` on the same origin. No Google Fonts, no font CDN.
-- **No analytics, no trackers, no external scripts, styles or images.** Everything the page loads comes from the same origin: PptxGenJS is vendored in `vendor/`, the nsdeploy runtime lives in `runtime/`, and the Whisper transcription model lives in `vendor/models/`.
-- **Transcription stays on the device.** Uploaded audio and microphone recordings are transcribed in the browser with Whisper (tiny, quantized). The model files are vendored in the repo, so nothing is fetched from Hugging Face and no audio ever leaves the browser.
-- **The only outbound request the site ever makes is your own LLM call**, and only after you enter a key and send a chat message, and only to the provider you chose. The demo model makes no network calls at all.
+- **No analytics, no trackers, no external scripts, styles or images.** Everything the page loads comes from the same origin, except the transcription model: PptxGenJS is vendored in `vendor/` and the nsdeploy runtime lives in `runtime/`, while the Whisper model downloads from Hugging Face the first time you transcribe (see below).
+- **Transcription stays on the device.** Uploaded audio and microphone recordings are transcribed in the browser with Whisper (tiny, quantized). The model downloads from Hugging Face on first use (about 44 MB, cached by the browser afterwards); that request is a download only, and no audio ever leaves the browser.
+- **Outbound requests.** The site makes two kinds of request outside itself, and only when you ask: your own LLM call, after you enter a key and send a chat message, to the provider you chose; and the Whisper model download from Hugging Face, the first time you transcribe. The demo model makes no network calls at all.
 - **The deployed site sets no cookies.**
 
 ## Deck quality: rewriting, not pasting
@@ -59,7 +59,7 @@ A spoken lecture is full of timestamps, filler words and false starts, and a dec
 
 ## Whisper transcription
 
-Uploaded audio and microphone recordings in browsers without live speech recognition are transcribed on the device with Whisper (tiny, quantized, English-only) via transformers.js. The tradeoff: the model files are large, about 44 MB (the whole `vendor/` folder is 63 MB). They are vendored into the repo instead of being downloaded from Hugging Face on first use, because the repo can hold them (the largest single file is 30.7 MB, under GitHub's 100 MB per-file limit) and vendoring means no model download ever leaves the origin and no visitor waits on a third party. The first transcription on a visit loads the model files from this origin (the browser cache keeps them for the next visit); progress shows model download first, then transcription. Measured in headless Chromium: a 33.6 second recording transcribed in 11.6 seconds, about 0.34x real time. The automated tests stub the transcription library (see `TESTING.md`); a real run is a manual step.
+Uploaded audio and microphone recordings in browsers without live speech recognition are transcribed on the device with Whisper (tiny, quantized, English-only) via transformers.js. The model is not vendored in the repo: the 30.7 MB decoder file is over GitHub's 25 MB web-upload limit, so it cannot be pushed through any GitHub route, and the model instead downloads from Hugging Face (huggingface.co, large files served from its CDN) the first time you transcribe. The download is about 44 MB in total, and the browser caches it for the next visit. The request is a download only: no audio, transcript, or key is sent anywhere, and the transcription itself runs on your device. The transformers.js library and the ONNX runtime wasm stay vendored in `vendor/`. Progress shows model download first, then transcription. Measured in headless Chromium: a 33.6 second recording transcribed in 11.6 seconds, about 0.34x real time. The automated tests stub the transcription library (see `TESTING.md`); a real run is a manual step.
 
 ## Quiz peer
 
